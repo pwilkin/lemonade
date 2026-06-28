@@ -41,6 +41,14 @@ std::vector<std::string> TrellisServer::build_server_args(const ModelInfo& model
     };
 }
 
+std::vector<std::pair<std::string, std::string>> TrellisServer::build_server_env() {
+    // Run the 512 cascade (TRELLIS_512=1): it skips the _1024 flow models and uses
+    // smaller grids/meshes, so peak host RAM (~15 GB intermediates for the 1024
+    // cascade) and VRAM drop substantially. The 1024 cascade can OOM a memory-
+    // contended box; 512 is the safe default for the prototype.
+    return {{"TRELLIS_512", "1"}};
+}
+
 void TrellisServer::model_3d_generations(const json& request, httplib::DataSink& sink) {
     if (!request.contains("image") || !request["image"].is_string()) {
         return;  // handler already validated; nothing to stream

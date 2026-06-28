@@ -28,6 +28,7 @@ public:
 protected:
     const BackendSpec* media_spec() const override;
     std::vector<std::string> build_server_args(const ModelInfo& model_info) override;
+    std::vector<std::pair<std::string, std::string>> build_server_env() override;
 };
 
 namespace trellis {
