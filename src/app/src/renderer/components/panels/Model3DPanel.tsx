@@ -7,8 +7,16 @@ import { serverFetch } from '../../utils/serverConfig';
 import ModelSelector from '../ModelSelector';
 import EmptyState from '../EmptyState';
 import InferenceControls from '../InferenceControls';
+import ImagePreviewList from '../ImagePreviewList';
 import { ImageUploadIcon } from '../Icons';
 import ModelViewer3D from '../ModelViewer3D';
+
+// Cascade options with rough on-device cost (measured on a 16 GB GPU / 31 GB host).
+const RESOLUTIONS = [
+  { value: '512',  label: '512 — ~3 GB VRAM, ~3 GB RAM, fast' },
+  { value: '1024', label: '1024 — ~15 GB VRAM, ~15 GB RAM, sharp' },
+  { value: '1536', label: '1536 — ~16+ GB VRAM, heavy, slow' },
+];
 
 interface Model3DPanelProps {
   isBusy: boolean;
@@ -27,6 +35,7 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
   const { selectedModel, modelsData } = useModels();
 
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [resolution, setResolution] = useState('512');
   const [glbUrl, setGlbUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const glbUrlRef = useRef<string | null>(null);
@@ -55,7 +64,7 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
       const response = await serverFetch('/3d/generations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selectedModel, image: b64 }),
+        body: JSON.stringify({ model: selectedModel, image: b64, resolution }),
       });
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const blob = await response.blob();
@@ -91,19 +100,11 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
 
       <div className="chat-input-container">
         <div className="chat-input-wrapper">
-          {imageDataUrl && (
-            <div className="image-preview-list">
-              <div className="image-preview-item">
-                <img src={imageDataUrl} alt="input" />
-                <button
-                  className="image-preview-remove"
-                  onClick={() => setImageDataUrl(null)}
-                  disabled={isBusy}
-                  title="Remove image"
-                >×</button>
-              </div>
-            </div>
-          )}
+          <ImagePreviewList
+            images={imageDataUrl ? [imageDataUrl] : []}
+            onRemove={() => setImageDataUrl(null)}
+            altPrefix="Input"
+          />
           <div className="chat-input model3d-hint" style={{ opacity: 0.7, pointerEvents: 'none' }}>
             {imageDataUrl ? 'Ready — press generate to reconstruct a 3D mesh.' : 'Attach an image to reconstruct into a 3D model.'}
           </div>
@@ -132,6 +133,16 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
                 >
                   <ImageUploadIcon />
                 </button>
+                <select
+                  className="model3d-res-select"
+                  value={resolution}
+                  onChange={(e) => setResolution(e.target.value)}
+                  disabled={isBusy}
+                  title="Cascade resolution (geometry detail vs VRAM/RAM cost)"
+                  style={{ fontSize: '0.85em', maxWidth: '320px' }}
+                >
+                  {RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                </select>
               </>
             }
           />

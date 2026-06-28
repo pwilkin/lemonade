@@ -66,6 +66,13 @@ void TrellisServer::model_3d_generations(const json& request, httplib::DataSink&
     if (request.contains("seed")) {
         fields.push_back({"seed", std::to_string(request["seed"].get<int>()), "", ""});
     }
+    // Cascade resolution (512/1024/1536); trellis-server defaults to 512 if absent.
+    if (request.contains("resolution")) {
+        std::string res = request["resolution"].is_string()
+                              ? request["resolution"].get<std::string>()
+                              : std::to_string(request["resolution"].get<int>());
+        fields.push_back({"resolution", res, "", ""});
+    }
     // 3D reconstruction is slow (the 1024 cascade is minutes); allow ample time.
     generate_multipart_to_sink("/generate", fields, sink, 1800);
 }
