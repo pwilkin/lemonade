@@ -34,6 +34,9 @@ Values set in the user's `config.json` always take precedence over these seeded 
 <!-- BEGIN GENERATED: config-example -->
 ```json
 {
+  "acestep": {
+    "vulkan_bin": "builtin"
+  },
   "cloud_providers": [],
   "config_version": 2,
   "ctx_size": -1,
@@ -71,6 +74,9 @@ Values set in the user's `config.json` always take precedence over these seeded 
   "no_broadcast": false,
   "no_fetch_executables": false,
   "offline": false,
+  "openmoss": {
+    "vulkan_bin": "builtin"
+  },
   "port": 13305,
   "rocm_channel": "stable",
   "ryzenai": {
@@ -89,6 +95,12 @@ Values set in the user's `config.json` always take precedence over these seeded 
     "vulkan_args": "",
     "vulkan_bin": "builtin",
     "width": 512
+  },
+  "thinksound": {
+    "vulkan_bin": "builtin"
+  },
+  "trellis": {
+    "vulkan_bin": "builtin"
   },
   "vllm": {
     "args": "",

@@ -205,6 +205,10 @@ private:
     void handle_image_variations(const httplib::Request& req, httplib::Response& res);
     void handle_image_upscale(const httplib::Request& req, httplib::Response& res);
 
+    // Generative-media endpoint handlers (GGML media engines)
+    void handle_audio_generations(const httplib::Request& req, httplib::Response& res);
+    void handle_3d_generations(const httplib::Request& req, httplib::Response& res);
+
     // Shared helpers for image multipart handlers
     // Return true on success; on failure set res status/body and return false.
     bool parse_n_from_form(const httplib::Request& req, httplib::Response& res, nlohmann::json& out);

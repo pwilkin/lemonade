@@ -62,6 +62,10 @@ set(LEMON_BACKENDS
     "ryzenai-llm|ryzenai"
     "vllm|vllm"
     "cloud|cloud"
+    "openmoss|openmoss"
+    "thinksound|thinksound"
+    "acestep|acestep"
+    "trellis|trellis"
 )
 
 # ============================================================
@@ -624,6 +628,7 @@ set(SOURCES_CORE
     src/cpp/server/model_manager.cpp
     src/cpp/server/hf_variants.cpp
     src/cpp/server/wrapped_server.cpp
+    src/cpp/server/ggml_media_server.cpp
     src/cpp/server/streaming_proxy.cpp
     src/cpp/server/system_info.cpp
     src/cpp/server/recipe_options.cpp

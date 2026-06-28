@@ -1,0 +1,79 @@
+#include "lemon/backends/trellis/trellis_server.h"
+#include "lemon/backends/trellis/trellis.h"
+#include "lemon/backends/backend_registry.h"
+#include "lemon/backends/backend_ops.h"
+#include "lemon/model_manager.h"
+#include "lemon/utils/json_utils.h"
+#include <string>
+#include <vector>
+
+namespace lemon {
+namespace backends {
+
+InstallParams TrellisServer::get_install_params(const std::string& backend, const std::string& version) {
+    (void)version;
+    InstallParams params;
+    params.repo = "pwilkin/trellis.cpp";
+    params.filename = "trellis-" + backend + "-x86_64.tar.gz";
+    return params;
+}
+
+TrellisServer::TrellisServer(const std::string& log_level,
+                             ModelManager* model_manager,
+                             BackendManager* backend_manager)
+    : GgmlMediaServer("trellis-server", log_level, model_manager, backend_manager) {}
+
+TrellisServer::~TrellisServer() {
+    unload();
+}
+
+const BackendSpec* TrellisServer::media_spec() const {
+    return trellis::spec();
+}
+
+std::vector<std::string> TrellisServer::build_server_args(const ModelInfo& model_info) {
+    (void)model_info;
+    // The checkpoint is the directory of TRELLIS.2 GGUFs.
+    return {
+        "--models", resolved_model_path_,
+        "--host", "127.0.0.1",
+        "--port", std::to_string(port_),
+    };
+}
+
+void TrellisServer::model_3d_generations(const json& request, httplib::DataSink& sink) {
+    if (!request.contains("image") || !request["image"].is_string()) {
+        return;  // handler already validated; nothing to stream
+    }
+    std::string b64 = request["image"].get<std::string>();
+    // Strip an optional data URL prefix ("data:image/png;base64,").
+    auto comma = b64.find(',');
+    if (b64.rfind("data:", 0) == 0 && comma != std::string::npos) {
+        b64 = b64.substr(comma + 1);
+    }
+    std::string image = utils::JsonUtils::base64_decode(b64);
+
+    std::vector<utils::MultipartField> fields;
+    fields.push_back({"image", image, "input.png", "image/png"});
+    if (request.contains("seed")) {
+        fields.push_back({"seed", std::to_string(request["seed"].get<int>()), "", ""});
+    }
+    // 3D reconstruction is slow (the 1024 cascade is minutes); allow ample time.
+    generate_multipart_to_sink("/generate", fields, sink, 1800);
+}
+
+}  // namespace backends
+
+namespace backends {
+namespace trellis {
+
+std::unique_ptr<WrappedServer> create(const BackendContext& ctx) {
+    return make_server<TrellisServer>(ctx);
+}
+
+const BackendSpec* spec() { return make_spec<TrellisServer>(descriptor); }
+const BackendOps* ops() { return default_backend_ops(); }
+
+}  // namespace trellis
+}  // namespace backends
+}  // namespace lemon

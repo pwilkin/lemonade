@@ -1230,6 +1230,26 @@ json Router::image_variations(const json& request) {
     });
 }
 
+void Router::audio_generations(const json& request, httplib::DataSink& sink) {
+    execute_streaming(request.dump(), sink, [&](WrappedServer* server) {
+        auto audio_server = dynamic_cast<IAudioGenerationServer*>(server);
+        if (!audio_server) {
+            throw UnsupportedOperationException("Audio generation", device_type_to_string(server->get_device_type()));
+        }
+        audio_server->audio_generations(request, sink);
+    });
+}
+
+void Router::model_3d_generations(const json& request, httplib::DataSink& sink) {
+    execute_streaming(request.dump(), sink, [&](WrappedServer* server) {
+        auto model_server = dynamic_cast<IModel3DServer*>(server);
+        if (!model_server) {
+            throw UnsupportedOperationException("3D generation", device_type_to_string(server->get_device_type()));
+        }
+        model_server->model_3d_generations(request, sink);
+    });
+}
+
 json Router::get_stats() const {
     std::lock_guard<std::mutex> lock(telemetry_mutex_);
     return aggregate_telemetry_.to_json();
