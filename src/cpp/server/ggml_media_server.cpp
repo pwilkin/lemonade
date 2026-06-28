@@ -4,7 +4,9 @@
 #include <stdexcept>
 #include "lemon/backend_manager.h"
 #include "lemon/backends/backend_utils.h"
+#include "lemon/backends/hf_cache_util.h"
 #include "lemon/model_manager.h"
+#include "lemon/utils/path_utils.h"
 #include "lemon/utils/process_manager.h"
 #include <lemon/utils/aixlog.hpp>
 
@@ -130,5 +132,23 @@ void GgmlMediaServer::generate_multipart_to_sink(const std::string& endpoint,
         LOG(ERROR, server_name_) << "generation request failed: " << e.what() << std::endl;
     }
 }
+
+namespace backends {
+
+std::string GgmlMediaDirOps::resolve_checkpoint_path(const ModelInfo& info,
+                                                     const CheckpointResolveContext& ctx) const {
+    (void)info;
+    // The binary wants the folder that holds the GGUFs — i.e. the active HF
+    // snapshot, not the repo cache root the base class returns for no-variant
+    // checkpoints.
+    std::filesystem::path root = lemon::utils::path_from_utf8(ctx.model_cache_path);
+    std::filesystem::path snap = hf_cache::active_snapshot_path(root);
+    if (!snap.empty() && hf_cache::exists(snap)) {
+        return lemon::utils::path_to_utf8(snap);
+    }
+    return ctx.model_cache_path;
+}
+
+} // namespace backends
 
 } // namespace lemon

@@ -72,7 +72,7 @@ std::unique_ptr<WrappedServer> create(const BackendContext& ctx) {
 }
 
 const BackendSpec* spec() { return make_spec<TrellisServer>(descriptor); }
-const BackendOps* ops() { return default_backend_ops(); }
+const BackendOps* ops() { return single_ops<GgmlMediaDirOps>(); }
 
 }  // namespace trellis
 }  // namespace backends

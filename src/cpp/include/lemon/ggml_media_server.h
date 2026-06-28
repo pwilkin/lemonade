@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 #include <httplib.h>
+#include "lemon/backends/backend_ops.h"
 #include "lemon/backends/backend_utils.h"
 #include "lemon/utils/http_client.h"
 #include "lemon/wrapped_server.h"
@@ -88,5 +89,19 @@ private:
     // throws — runs inside the router's streaming content provider.
     void deliver(const utils::HttpResponse& resp, httplib::DataSink& sink);
 };
+
+namespace backends {
+
+// Shared ops for directory-style GGML model repos (a folder of GGUFs that the
+// backend binary loads via --dir/--models). Resolves the checkpoint to the
+// active Hugging Face snapshot directory rather than the cache root, so the
+// resolved path actually contains the downloaded files.
+class GgmlMediaDirOps : public BackendOps {
+public:
+    std::string resolve_checkpoint_path(const ModelInfo& info,
+                                        const CheckpointResolveContext& ctx) const override;
+};
+
+} // namespace backends
 
 } // namespace lemon

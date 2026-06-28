@@ -5,7 +5,9 @@
 #include "lemon/model_manager.h"
 #include "lemon/utils/http_client.h"
 #include <lemon/utils/aixlog.hpp>
+#include <algorithm>
 #include <chrono>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -123,6 +125,31 @@ void AceStepServer::audio_generations(const json& request, httplib::DataSink& si
 }  // namespace backends
 
 namespace backends {
+
+namespace {
+// ACE-Step's HF repo holds many variants; the checkpoint variant names the DiT,
+// and we additionally fetch one LM, the text encoder, and the VAE. Resolves to
+// the snapshot directory (ace-server scans --models), via GgmlMediaDirOps.
+class AceStepOps : public GgmlMediaDirOps {
+public:
+    std::optional<std::vector<std::string>> select_checkpoint_files(
+        const std::string& main_variant, const std::vector<std::string>& repo_files) const override {
+        static const std::vector<std::string> kCompanions = {
+            "acestep-5Hz-lm-4B-Q8_0.gguf",     // language model (vocals/auto-lyrics)
+            "Qwen3-Embedding-0.6B-BF16.gguf",  // text encoder
+            "vae-BF16.gguf",                   // VAE
+        };
+        std::vector<std::string> want = {main_variant};
+        for (const auto& c : kCompanions) {
+            if (std::find(repo_files.begin(), repo_files.end(), c) != repo_files.end()) {
+                want.push_back(c);
+            }
+        }
+        return want;
+    }
+};
+}  // namespace
+
 namespace acestep {
 
 std::unique_ptr<WrappedServer> create(const BackendContext& ctx) {
@@ -130,7 +157,7 @@ std::unique_ptr<WrappedServer> create(const BackendContext& ctx) {
 }
 
 const BackendSpec* spec() { return make_spec<AceStepServer>(descriptor); }
-const BackendOps* ops() { return default_backend_ops(); }
+const BackendOps* ops() { return single_ops<AceStepOps>(); }
 
 }  // namespace acestep
 }  // namespace backends

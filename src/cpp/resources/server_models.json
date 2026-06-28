@@ -1624,8 +1624,7 @@
         "size": 0.354
     },
     "OpenMOSS-TTS": {
-        "checkpoint": "/devel/alt/openmoss/weights/moss-tts-1.5-q8_0.gguf",
-        "source": "local_path",
+        "checkpoint": "ilintar/moss-tts-gguf:moss-tts-1.5-q8_0.gguf",
         "recipe": "openmoss",
         "suggested": true,
         "labels": [
@@ -1634,8 +1633,7 @@
         "size": 8.7
     },
     "ThinkSound-SFX": {
-        "checkpoint": "/media/ilintar/D_SSD/thinksound/gguf",
-        "source": "local_path",
+        "checkpoint": "ilintar/thinksound-gguf",
         "recipe": "thinksound",
         "suggested": true,
         "labels": [
@@ -1644,8 +1642,7 @@
         "size": 4.0
     },
     "ACE-Step-Music": {
-        "checkpoint": "/media/ilintar/D_SSD/models/acestep",
-        "source": "local_path",
+        "checkpoint": "Serveurperso/ACE-Step-1.5-GGUF:acestep-v15-xl-sft-Q8_0.gguf",
         "recipe": "acestep",
         "suggested": true,
         "labels": [
@@ -1654,8 +1651,7 @@
         "size": 7.7
     },
     "TRELLIS-3D": {
-        "checkpoint": "/media/ilintar/D_SSD/models/trellis2/gguf",
-        "source": "local_path",
+        "checkpoint": "ilintar/trellis2-gguf",
         "recipe": "trellis",
         "suggested": true,
         "labels": [
