@@ -4,10 +4,9 @@ import { Modality } from '../../hooks/useInferenceState';
 import { ModelsData } from '../../utils/modelData';
 import { AppSettings } from '../../utils/appSettings';
 import { serverFetch } from '../../utils/serverConfig';
-import { SendIcon } from '../Icons';
 import ModelSelector from '../ModelSelector';
 import EmptyState from '../EmptyState';
-import TypingIndicator from '../TypingIndicator';
+import InferenceControls from '../InferenceControls';
 
 interface AudioGenerationPanelProps {
   isBusy: boolean;
@@ -36,7 +35,6 @@ const AudioGenerationPanel: React.FC<AudioGenerationPanelProps> = ({
   const clipsRef = useRef<GeneratedClip[]>([]);
   clipsRef.current = clips;
 
-  // Release blob URLs on unmount.
   useEffect(() => () => { clipsRef.current.forEach(c => URL.revokeObjectURL(c.url)); }, []);
 
   const handleGenerate = async () => {
@@ -51,12 +49,9 @@ const AudioGenerationPanel: React.FC<AudioGenerationPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: selectedModel, prompt, duration }),
       });
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      setClips(prev => [...prev, { url, prompt }]);
+      setClips(prev => [...prev, { url: URL.createObjectURL(blob), prompt }]);
     } catch (error: any) {
       console.error('Audio generation failed:', error);
       showError(`Failed to generate audio: ${error.message || 'Unknown error'}`);
@@ -105,10 +100,16 @@ const AudioGenerationPanel: React.FC<AudioGenerationPanelProps> = ({
             placeholder="Describe the music or sound effect to generate..."
             rows={1}
           />
-          <div className="chat-controls">
-            <div className="chat-controls-left">
-              <ModelSelector disabled={isBusy} />
-              <label className="audio-duration-label" style={{ marginLeft: '8px', fontSize: '0.85em' }}>
+          <InferenceControls
+            isBusy={isBusy}
+            isInferring={isInferring}
+            stoppable={false}
+            onSend={handleGenerate}
+            sendDisabled={!prompt.trim()}
+            sendTitle="Generate"
+            modelSelector={<ModelSelector disabled={isBusy} />}
+            leftControls={
+              <label className="audio-duration-label" style={{ fontSize: '0.85em', whiteSpace: 'nowrap' }}>
                 Duration
                 <input
                   type="number"
@@ -117,20 +118,11 @@ const AudioGenerationPanel: React.FC<AudioGenerationPanelProps> = ({
                   value={duration}
                   onChange={(e) => setDuration(Math.max(1, Math.min(600, Number(e.target.value) || 1)))}
                   disabled={isBusy}
-                  style={{ width: '64px', marginLeft: '6px' }}
+                  style={{ width: '56px', marginLeft: '6px' }}
                 /> s
               </label>
-            </div>
-            {isBusy ? (
-              <button className="chat-send-button" disabled title="Processing...">
-                <TypingIndicator size="small" />
-              </button>
-            ) : (
-              <button className="chat-send-button" onClick={handleGenerate} disabled={!prompt.trim()} title="Generate">
-                <SendIcon />
-              </button>
-            )}
-          </div>
+            }
+          />
         </div>
       </div>
     </>

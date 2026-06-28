@@ -6,7 +6,8 @@ import { AppSettings } from '../../utils/appSettings';
 import { serverFetch } from '../../utils/serverConfig';
 import ModelSelector from '../ModelSelector';
 import EmptyState from '../EmptyState';
-import TypingIndicator from '../TypingIndicator';
+import InferenceControls from '../InferenceControls';
+import { ImageUploadIcon } from '../Icons';
 import ModelViewer3D from '../ModelViewer3D';
 
 interface Model3DPanelProps {
@@ -44,8 +45,6 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
 
   const handleGenerate = async () => {
     if (!imageDataUrl || isBusy || !selectedModel) return;
-
-    // Strip the "data:image/...;base64," prefix — the server wants raw base64.
     const comma = imageDataUrl.indexOf(',');
     const b64 = comma >= 0 ? imageDataUrl.slice(comma + 1) : imageDataUrl;
 
@@ -58,9 +57,7 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: selectedModel, image: b64 }),
       });
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const blob = await response.blob();
       if (glbUrlRef.current) URL.revokeObjectURL(glbUrlRef.current);
       setGlbUrl(URL.createObjectURL(blob));
@@ -77,7 +74,7 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
       <div className="chat-messages">
         {!glbUrl && !isBusy && <EmptyState title="Lemonade 3D Generator" />}
         {glbUrl && (
-          <div className="chat-message" style={{ height: '420px' }}>
+          <div className="chat-message" style={{ height: '440px', maxWidth: '100%' }}>
             <ModelViewer3D src={glbUrl} />
             <a href={glbUrl} download="model.glb" className="download-link" style={{ display: 'inline-block', marginTop: '6px' }}>
               Download .glb
@@ -88,35 +85,56 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
           <div className="model-loading-indicator"><span className="model-loading-text">Loading 3D model...</span></div>
         )}
         {isInferring && activeModality === 'model3d' && (
-          <div className="model-loading-indicator"><span className="model-loading-text">Reconstructing 3D mesh (this can take a few minutes)...</span></div>
+          <div className="model-loading-indicator"><span className="model-loading-text">Reconstructing 3D mesh (this can take a couple of minutes)...</span></div>
         )}
       </div>
 
       <div className="chat-input-container">
         <div className="chat-input-wrapper">
-          <div className="model3d-input-row" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handlePickImage} />
-            <button className="secondary-button" onClick={() => fileInputRef.current?.click()} disabled={isBusy}>
-              {imageDataUrl ? 'Change image' : 'Choose image'}
-            </button>
-            {imageDataUrl && (
-              <img src={imageDataUrl} alt="input" style={{ height: '48px', borderRadius: '4px' }} />
-            )}
-          </div>
-          <div className="chat-controls">
-            <div className="chat-controls-left">
-              <ModelSelector disabled={isBusy} />
+          {imageDataUrl && (
+            <div className="image-preview-list">
+              <div className="image-preview-item">
+                <img src={imageDataUrl} alt="input" />
+                <button
+                  className="image-preview-remove"
+                  onClick={() => setImageDataUrl(null)}
+                  disabled={isBusy}
+                  title="Remove image"
+                >×</button>
+              </div>
             </div>
-            {isBusy ? (
-              <button className="chat-send-button" disabled title="Processing...">
-                <TypingIndicator size="small" />
-              </button>
-            ) : (
-              <button className="chat-send-button" onClick={handleGenerate} disabled={!imageDataUrl} title="Generate 3D">
-                Generate
-              </button>
-            )}
+          )}
+          <div className="chat-input model3d-hint" style={{ opacity: 0.7, pointerEvents: 'none' }}>
+            {imageDataUrl ? 'Ready — press generate to reconstruct a 3D mesh.' : 'Attach an image to reconstruct into a 3D model.'}
           </div>
+          <InferenceControls
+            isBusy={isBusy}
+            isInferring={isInferring}
+            stoppable={false}
+            onSend={handleGenerate}
+            sendDisabled={!imageDataUrl}
+            sendTitle="Generate 3D"
+            modelSelector={<ModelSelector disabled={isBusy} />}
+            leftControls={
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePickImage}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  className="image-upload-button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isBusy}
+                  title={imageDataUrl ? 'Change image' : 'Upload image'}
+                >
+                  <ImageUploadIcon />
+                </button>
+              </>
+            }
+          />
         </div>
       </div>
     </>
