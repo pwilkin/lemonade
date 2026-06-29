@@ -2937,6 +2937,29 @@ void Server::handle_audio_speech(const httplib::Request& req, httplib::Response&
     }
 }
 
+void Server::serve_media_or_error(httplib::Response& res, const std::string& mime_type,
+                                  const std::function<void(httplib::DataSink&)>& generate) {
+    // Buffer the generated media so we can tell success from a silent failure. A
+    // streaming content provider commits a 200 before the backend runs, so a backend
+    // crash/OOM mid-stream would surface as a successful empty file; buffering lets us
+    // return a real error instead.
+    std::string buf;
+    httplib::DataSink sink;
+    sink.write = [&buf](const char* data, size_t len) { buf.append(data, len); return true; };
+    sink.is_writable = []() { return true; };
+    sink.done = []() {};
+    generate(sink);
+    if (buf.empty()) {
+        res.status = 502;
+        res.set_content(nlohmann::json{{"error", {
+            {"message", "Generation failed: the backend produced no output (it likely crashed or ran "
+                        "out of GPU memory). Check the server logs."},
+            {"type", "backend_error"}}}}.dump(), "application/json");
+        return;
+    }
+    res.set_content(buf, mime_type);
+}
+
 void Server::handle_audio_generations(const httplib::Request& req, httplib::Response& res) {
     try {
         auto request_json = nlohmann::json::parse(req.body);
@@ -2974,12 +2997,9 @@ void Server::handle_audio_generations(const httplib::Request& req, httplib::Resp
 
         LOG(INFO, "Server") << "POST /api/v1/audio/generations" << std::endl;
 
-        auto media_source = [this, request_json](size_t offset, httplib::DataSink& sink) {
-            if (offset > 0) return false;
+        serve_media_or_error(res, mime_type, [this, request_json](httplib::DataSink& sink) {
             router_->audio_generations(request_json, sink);
-            return false;
-        };
-        res.set_content_provider(mime_type, media_source);
+        });
     } catch (const std::exception& e) {
         LOG(ERROR, "Server") << "ERROR in handle_audio_generations: " << e.what() << std::endl;
         res.status = 500;
@@ -3020,12 +3040,9 @@ void Server::handle_3d_generations(const httplib::Request& req, httplib::Respons
 
         LOG(INFO, "Server") << "POST /api/v1/3d/generations" << std::endl;
 
-        auto media_source = [this, request_json](size_t offset, httplib::DataSink& sink) {
-            if (offset > 0) return false;
+        serve_media_or_error(res, "model/gltf-binary", [this, request_json](httplib::DataSink& sink) {
             router_->model_3d_generations(request_json, sink);
-            return false;
-        };
-        res.set_content_provider("model/gltf-binary", media_source);
+        });
     } catch (const std::exception& e) {
         LOG(ERROR, "Server") << "ERROR in handle_3d_generations: " << e.what() << std::endl;
         res.status = 500;

@@ -73,6 +73,11 @@ void TrellisServer::model_3d_generations(const json& request, httplib::DataSink&
                               : std::to_string(request["resolution"].get<int>());
         fields.push_back({"resolution", res, "", ""});
     }
+    // Background removal mode (threshold | birefnet); uploads default to birefnet
+    // on the client so an arbitrary photo's real background gets matted out.
+    if (request.contains("bg_removal") && request["bg_removal"].is_string()) {
+        fields.push_back({"bg_removal", request["bg_removal"].get<std::string>(), "", ""});
+    }
     // 3D reconstruction is slow (the 1024 cascade is minutes); allow ample time.
     generate_multipart_to_sink("/generate", fields, sink, 1800);
 }

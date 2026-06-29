@@ -54,8 +54,11 @@ protected:
     // is prepended by ProcessManager, so do NOT include it here.
     virtual std::vector<std::string> build_server_args(const ModelInfo& model_info) = 0;
 
-    // Extra environment for the subprocess (e.g. {"TS_BACKEND", "Vulkan0"}).
-    virtual std::vector<std::pair<std::string, std::string>> build_server_env() { return {}; }
+    // Extra environment for the subprocess. The base implementation routes
+    // ggml-vulkan backends to the GPU with the most VRAM (GGML_VK_VISIBLE_DEVICES),
+    // so a long generation doesn't land on a smaller card and OOM. Overrides that
+    // want this should call GgmlMediaServer::build_server_env() and append.
+    virtual std::vector<std::pair<std::string, std::string>> build_server_env();
 
     // Endpoint polled by wait_for_ready() to detect server startup.
     virtual std::string health_endpoint() const { return "/health"; }

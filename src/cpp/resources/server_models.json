@@ -1632,6 +1632,16 @@
         ],
         "size": 8.7
     },
+    "MOSS-VoiceGen": {
+        "checkpoint": "ilintar/moss-voicegen-gguf:moss-voicegen.gguf",
+        "recipe": "openmoss",
+        "suggested": true,
+        "labels": [
+            "tts",
+            "voice-design"
+        ],
+        "size": 7.8
+    },
     "ThinkSound-SFX": {
         "checkpoint": "ilintar/thinksound-gguf",
         "recipe": "thinksound",

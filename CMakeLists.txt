@@ -644,6 +644,7 @@ set(SOURCES_CORE
     src/cpp/server/utils/wmi_helper.cpp
     src/cpp/server/utils/network_beacon.cpp
     src/cpp/server/utils/tcp_jsonl_client.cpp
+    src/cpp/server/utils/vulkan_devices.cpp
     src/cpp/server/backends/backend_utils.cpp
     src/cpp/server/backend_manager.cpp
     src/cpp/server/ollama_api.cpp
@@ -861,6 +862,17 @@ elseif(UNIX)
             endif()
         endif()
     endif()
+endif()
+
+# Optional Vulkan headers (no link): lemond enumerates GPUs by VRAM at runtime via
+# dlopen of the loader, to route ggml-vulkan media backends to the roomiest GPU.
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+    target_include_directories(lemonade-server-core PRIVATE ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(lemonade-server-core PRIVATE HAVE_VULKAN)
+    message(STATUS "Vulkan headers found - media backends route to the roomiest GPU")
+else()
+    message(STATUS "Vulkan headers not found - media backends use ggml's default GPU selection")
 endif()
 
 # lemond inherits all deps from lemonade-server-core

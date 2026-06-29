@@ -2,17 +2,37 @@
 
 #include <filesystem>
 #include <stdexcept>
+#include <string>
+#include <vector>
 #include "lemon/backend_manager.h"
 #include "lemon/backends/backend_utils.h"
 #include "lemon/backends/hf_cache_util.h"
 #include "lemon/model_manager.h"
 #include "lemon/utils/path_utils.h"
 #include "lemon/utils/process_manager.h"
+#include "lemon/utils/vulkan_devices.h"
 #include <lemon/utils/aixlog.hpp>
 
 namespace lemon {
 
 using backends::BackendUtils;
+
+std::vector<std::pair<std::string, std::string>> GgmlMediaServer::build_server_env() {
+    // Route ggml-vulkan media backends (ace-server, ts-server, ...) to the GPU with
+    // the most VRAM. ggml-vulkan otherwise uses Vulkan device 0, which on a mixed
+    // multi-GPU box can be the smaller card and OOM on a large generation (long
+    // audio, big meshes). vram_sorted_vulkan_device_order() enumerates the Vulkan
+    // devices (any vendor), drops software rasterizers, and orders them so the
+    // roomiest real GPU is logical device 0. Empty -> keep ggml's default selection.
+    std::vector<std::pair<std::string, std::string>> env;
+    std::string order = utils::vram_sorted_vulkan_device_order();
+    if (!order.empty()) {
+        LOG(INFO, server_name_) << "routing to GPUs by VRAM (most first): GGML_VK_VISIBLE_DEVICES="
+                                << order << std::endl;
+        env.push_back({"GGML_VK_VISIBLE_DEVICES", order});
+    }
+    return env;
+}
 
 GgmlMediaServer::GgmlMediaServer(const std::string& server_name,
                                  const std::string& log_level,
