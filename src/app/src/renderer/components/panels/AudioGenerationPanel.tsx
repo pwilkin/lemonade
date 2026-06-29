@@ -37,6 +37,13 @@ const AudioGenerationPanel: React.FC<AudioGenerationPanelProps> = ({
 
   useEffect(() => () => { clipsRef.current.forEach(c => URL.revokeObjectURL(c.url)); }, []);
 
+  // Music (ACE-Step) is long-form, so default to a full clip; SFX (ThinkSound)
+  // stays short. Resets to the model's default when the selected model changes.
+  const audioRecipe = modelsData?.[selectedModel]?.recipe || '';
+  useEffect(() => {
+    setDuration(audioRecipe === 'acestep' ? 150 : 10);
+  }, [audioRecipe]);
+
   const handleGenerate = async () => {
     if (!prompt.trim() || isBusy || !selectedModel) return;
 

@@ -4,19 +4,34 @@ import { Modality } from '../../hooks/useInferenceState';
 import { ModelsData } from '../../utils/modelData';
 import { AppSettings } from '../../utils/appSettings';
 import { serverFetch } from '../../utils/serverConfig';
+import { ensureModelReady, DownloadAbortError } from '../../utils/backendInstaller';
 import ModelSelector from '../ModelSelector';
 import EmptyState from '../EmptyState';
 import InferenceControls from '../InferenceControls';
 import ImagePreviewList from '../ImagePreviewList';
 import { ImageUploadIcon } from '../Icons';
 import ModelViewer3D from '../ModelViewer3D';
+import Combobox from '../Combobox';
 
-// Cascade options with rough on-device cost (measured on a 16 GB GPU / 31 GB host).
-const RESOLUTIONS = [
-  { value: '512',  label: '512 — ~3 GB VRAM, ~3 GB RAM, fast' },
-  { value: '1024', label: '1024 — ~15 GB VRAM, ~15 GB RAM, sharp' },
-  { value: '1536', label: '1536 — ~16+ GB VRAM, heavy, slow' },
+// Cascade options shown in the picker (rough cost measured on a 16 GB GPU / 31 GB
+// host). The leading number is the value sent to the server.
+const RES_OPTIONS = [
+  '512 — ~3 GB VRAM, fast',
+  '1024 — ~15 GB VRAM, sharp',
+  '1536 — ~16+ GB VRAM, heavy',
 ];
+
+// Background removal for uploaded images. BiRefNet (a full matte model) handles
+// arbitrary photos/backgrounds; the threshold keyer only suits clean white bgs.
+const BG_OPTIONS = ['Auto matte (BiRefNet)', 'Plain background'];
+
+// The verified text-to-3D prompt suffix (matches the 3d-generation skill): TRELLIS
+// rebuilds geometry from ONE image, so the render must show depth — a 3/4 view of a
+// single centered subject on a plain background reconstructs far better.
+const PROMPT_TAGS =
+  'single subject, centered, whole object in frame, ' +
+  'three-quarter view from slightly above showing the top and two sides, ' +
+  'plain white background, even soft studio lighting, high detail, 3D asset render';
 
 interface Model3DPanelProps {
   isBusy: boolean;
@@ -32,16 +47,33 @@ interface Model3DPanelProps {
 const Model3DPanel: React.FC<Model3DPanelProps> = ({
   isBusy, isPreFlight, isInferring, activeModality, runPreFlight, reset, showError,
 }) => {
-  const { selectedModel, modelsData } = useModels();
+  const { selectedModel, modelsData, downloadedModels } = useModels();
 
+  const [sourceMode, setSourceMode] = useState<'image' | 'text'>('image');
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
-  const [resolution, setResolution] = useState('512');
+  const [resLabel, setResLabel] = useState(RES_OPTIONS[0]);
+  const [bgLabel, setBgLabel] = useState(BG_OPTIONS[0]);
+  const [textPrompt, setTextPrompt] = useState('');
+  const [imageModel, setImageModel] = useState('');
+  const [generatingImage, setGeneratingImage] = useState(false);
   const [glbUrl, setGlbUrl] = useState<string | null>(null);
+
+  // The cascade value is the leading number of the selected label.
+  const resolution = resLabel.match(/^\d+/)?.[0] ?? '512';
+  const bgRemoval = bgLabel.startsWith('Auto') ? 'birefnet' : 'threshold';
+  const imageModels = downloadedModels
+    .filter((m) => m.info?.labels?.includes('image'))
+    .map((m) => m.id);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const glbUrlRef = useRef<string | null>(null);
   glbUrlRef.current = glbUrl;
 
   useEffect(() => () => { if (glbUrlRef.current) URL.revokeObjectURL(glbUrlRef.current); }, []);
+  // Default the image-gen model to the first one available.
+  useEffect(() => {
+    if (!imageModel && imageModels.length) setImageModel(imageModels[0]);
+  }, [imageModels, imageModel]);
 
   const handlePickImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -52,31 +84,73 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
     e.target.value = '';
   };
 
-  const handleGenerate = async () => {
-    if (!imageDataUrl || isBusy || !selectedModel) return;
-    const comma = imageDataUrl.indexOf(',');
-    const b64 = comma >= 0 ? imageDataUrl.slice(comma + 1) : imageDataUrl;
-
+  const reconstruct = async (b64: string, bg: string) => {
     const ready = await runPreFlight('model3d', { modelName: selectedModel, modelsData, onError: showError });
     if (!ready) return;
+    const response = await serverFetch('/3d/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: selectedModel, image: b64, resolution, bg_removal: bg }),
+    });
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    const blob = await response.blob();
+    if (glbUrlRef.current) URL.revokeObjectURL(glbUrlRef.current);
+    setGlbUrl(URL.createObjectURL(blob));
+  };
+
+  const handleGenerate = async () => {
+    if (isBusy || !selectedModel) return;
 
     try {
-      const response = await serverFetch('/3d/generations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selectedModel, image: b64, resolution }),
-      });
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const blob = await response.blob();
-      if (glbUrlRef.current) URL.revokeObjectURL(glbUrlRef.current);
-      setGlbUrl(URL.createObjectURL(blob));
+      if (sourceMode === 'image') {
+        if (!imageDataUrl) return;
+        const comma = imageDataUrl.indexOf(',');
+        const b64 = comma >= 0 ? imageDataUrl.slice(comma + 1) : imageDataUrl;
+        await reconstruct(b64, bgRemoval);
+      } else {
+        if (!textPrompt.trim() || !imageModel) return;
+        // 1) render a 3D-friendly reference image with the chosen image model.
+        setGeneratingImage(true);
+        try {
+          await ensureModelReady(imageModel, modelsData);
+        } catch (e: any) {
+          if (e instanceof DownloadAbortError) return;
+          throw e;
+        }
+        const imgResp = await serverFetch('/images/generations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: imageModel,
+            prompt: `${textPrompt.trim()} -- ${PROMPT_TAGS}`,
+            response_format: 'b64_json',
+            n: 1,
+            size: '1024x1024',
+          }),
+        });
+        if (!imgResp.ok) throw new Error(`image generation failed (status ${imgResp.status})`);
+        const imgData = await imgResp.json();
+        const b64 = imgData.data?.[0]?.b64_json;
+        if (!b64) throw new Error(imgData.error?.message || 'image generation returned no image');
+        setGeneratingImage(false);
+        // 2) reconstruct it — matte the subject out (a generated scene isn't always a
+        // clean white key, e.g. a "blazing" subject glows into the background, which the
+        // threshold keyer leaves in and TRELLIS then rebuilds as a flat poster).
+        await reconstruct(b64, bgRemoval);
+      }
     } catch (error: any) {
       console.error('3D generation failed:', error);
       showError(`Failed to generate 3D model: ${error.message || 'Unknown error'}`);
     } finally {
+      setGeneratingImage(false);
       reset();
     }
   };
+
+  const noImageModels = sourceMode === 'text' && imageModels.length === 0;
+  const sendDisabled = sourceMode === 'image'
+    ? !imageDataUrl
+    : (!textPrompt.trim() || noImageModels);
 
   return (
     <>
@@ -90,6 +164,9 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
             </a>
           </div>
         )}
+        {generatingImage && (
+          <div className="model-loading-indicator"><span className="model-loading-text">Rendering reference image...</span></div>
+        )}
         {isPreFlight && activeModality === 'model3d' && (
           <div className="model-loading-indicator"><span className="model-loading-text">Loading 3D model...</span></div>
         )}
@@ -100,49 +177,72 @@ const Model3DPanel: React.FC<Model3DPanelProps> = ({
 
       <div className="chat-input-container">
         <div className="chat-input-wrapper">
-          <ImagePreviewList
-            images={imageDataUrl ? [imageDataUrl] : []}
-            onRemove={() => setImageDataUrl(null)}
-            altPrefix="Input"
-          />
-          <div className="chat-input model3d-hint" style={{ opacity: 0.7, pointerEvents: 'none' }}>
-            {imageDataUrl ? 'Ready — press generate to reconstruct a 3D mesh.' : 'Attach an image to reconstruct into a 3D model.'}
+          <div className="model3d-source-toggle">
+            <button className={`toggle-button${sourceMode === 'image' ? ' active' : ''}`} onClick={() => setSourceMode('image')} disabled={isBusy}>From image</button>
+            <button className={`toggle-button${sourceMode === 'text' ? ' active' : ''}`} onClick={() => setSourceMode('text')} disabled={isBusy}>From text</button>
           </div>
+
+          {sourceMode === 'image' ? (
+            <>
+              <ImagePreviewList
+                images={imageDataUrl ? [imageDataUrl] : []}
+                onRemove={() => setImageDataUrl(null)}
+                altPrefix="Input"
+              />
+              <div className="chat-input model3d-hint" style={{ opacity: 0.7, pointerEvents: 'none' }}>
+                {imageDataUrl ? 'Ready — press generate to reconstruct a 3D mesh.' : 'Attach an image to reconstruct into a 3D model.'}
+              </div>
+            </>
+          ) : (
+            <textarea
+              className="chat-input"
+              value={textPrompt}
+              onChange={(e) => setTextPrompt(e.target.value)}
+              placeholder={noImageModels ? 'Download an image-generation model to use text → 3D.' : 'Describe the object to model (e.g. an ornate wooden treasure chest)...'}
+              rows={1}
+              disabled={isBusy || noImageModels}
+            />
+          )}
+
           <InferenceControls
             isBusy={isBusy}
             isInferring={isInferring}
             stoppable={false}
             onSend={handleGenerate}
-            sendDisabled={!imageDataUrl}
+            sendDisabled={sendDisabled}
             sendTitle="Generate 3D"
             modelSelector={<ModelSelector disabled={isBusy} />}
             leftControls={
               <>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handlePickImage}
-                  style={{ display: 'none' }}
-                />
-                <button
-                  className="image-upload-button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isBusy}
-                  title={imageDataUrl ? 'Change image' : 'Upload image'}
-                >
-                  <ImageUploadIcon />
-                </button>
-                <select
-                  className="model3d-res-select"
-                  value={resolution}
-                  onChange={(e) => setResolution(e.target.value)}
-                  disabled={isBusy}
-                  title="Cascade resolution (geometry detail vs VRAM/RAM cost)"
-                  style={{ fontSize: '0.85em', maxWidth: '320px' }}
-                >
-                  {RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-                </select>
+                {sourceMode === 'image' ? (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handlePickImage}
+                      style={{ display: 'none' }}
+                    />
+                    <button
+                      className="image-upload-button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isBusy}
+                      title={imageDataUrl ? 'Change image' : 'Upload image'}
+                    >
+                      <ImageUploadIcon />
+                    </button>
+                  </>
+                ) : (
+                  <div style={{ width: '190px' }} title="Image-generation model used to render the reference view">
+                    <Combobox optionsList={imageModels} defaultValue={imageModel} onChangeFunc={setImageModel} placeholder="Image model" position="top" />
+                  </div>
+                )}
+                <div style={{ width: '190px' }} title="Background removal applied before reconstruction">
+                  <Combobox optionsList={BG_OPTIONS} defaultValue={bgLabel} onChangeFunc={setBgLabel} placeholder="Background" position="top" />
+                </div>
+                <div style={{ width: '210px' }} title="Cascade resolution (geometry detail vs VRAM/RAM cost)">
+                  <Combobox optionsList={RES_OPTIONS} defaultValue={resLabel} onChangeFunc={setResLabel} placeholder="Cascade resolution" position="top" />
+                </div>
               </>
             }
           />
