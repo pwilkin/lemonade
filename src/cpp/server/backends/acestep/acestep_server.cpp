@@ -34,8 +34,8 @@ std::string extract_multipart_audio(const std::string& body) {
 InstallParams AceStepServer::get_install_params(const std::string& backend, const std::string& version) {
     (void)version;
     InstallParams params;
-    params.repo = "ServeurpersoCom/acestep.cpp";
-    params.filename = "acestep-" + backend + "-x86_64.tar.gz";
+    params.repo = "pwilkin/acestep.cpp";
+    params.filename = media_release_asset("acestep", backend);
     return params;
 }
 

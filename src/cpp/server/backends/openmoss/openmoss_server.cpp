@@ -14,10 +14,7 @@ InstallParams OpenMossServer::get_install_params(const std::string& backend, con
     (void)version;
     InstallParams params;
     params.repo = "pwilkin/openmoss";
-    // Release-asset naming is provisional; the prototype runs a locally-built
-    // binary selected via the "openmoss.vulkan_bin" config path, so this is only
-    // used once prebuilt binaries are published.
-    params.filename = "moss-tts-" + backend + "-x86_64.tar.gz";
+    params.filename = media_release_asset("moss-tts", backend);
     return params;
 }
 

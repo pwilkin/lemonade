@@ -14,7 +14,7 @@ InstallParams TrellisServer::get_install_params(const std::string& backend, cons
     (void)version;
     InstallParams params;
     params.repo = "pwilkin/trellis.cpp";
-    params.filename = "trellis-" + backend + "-x86_64.tar.gz";
+    params.filename = media_release_asset("trellis", backend);
     return params;
 }
 

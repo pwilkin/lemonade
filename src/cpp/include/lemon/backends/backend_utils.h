@@ -22,6 +22,18 @@ namespace lemon::backends {
         std::string version_override;  // If set, use this as the release tag instead of backend_versions.json value
     };
 
+    // Release-asset name for a GGML media backend, keyed by OS so the same
+    // get_install_params works cross-platform: "<prefix>-<backend>-<os>-x64.<ext>"
+    // (Linux -> .tar.gz, Windows -> .zip). These backends aren't published for
+    // macOS. The matching CI workflows must emit exactly these names.
+    inline std::string media_release_asset(const std::string& prefix, const std::string& backend) {
+#ifdef _WIN32
+        return prefix + "-" + backend + "-windows-x64.zip";
+#else
+        return prefix + "-" + backend + "-linux-x64.tar.gz";
+#endif
+    }
+
     struct BackendSpec {
         const std::string recipe;
         const std::string binary;

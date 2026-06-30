@@ -13,7 +13,7 @@ InstallParams ThinkSoundServer::get_install_params(const std::string& backend, c
     (void)version;
     InstallParams params;
     params.repo = "pwilkin/thinksound.cpp";
-    params.filename = "thinksound-" + backend + "-x86_64.tar.gz";
+    params.filename = media_release_asset("thinksound", backend);
     return params;
 }
 
