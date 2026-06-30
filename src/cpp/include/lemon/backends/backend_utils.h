@@ -27,10 +27,13 @@ namespace lemon::backends {
     // (Linux -> .tar.gz, Windows -> .zip). These backends aren't published for
     // macOS. The matching CI workflows must emit exactly these names.
     inline std::string media_release_asset(const std::string& prefix, const std::string& backend) {
+        // ROCm channels (rocm-stable/rocm-nightly) all map to one multi-arch "rocm"
+        // asset; the arch-specific runtime comes from the shared TheRock SDK.
+        std::string variant = (backend.rfind("rocm", 0) == 0) ? "rocm" : backend;
 #ifdef _WIN32
-        return prefix + "-" + backend + "-windows-x64.zip";
+        return prefix + "-" + variant + "-windows-x64.zip";
 #else
-        return prefix + "-" + backend + "-linux-x64.tar.gz";
+        return prefix + "-" + variant + "-linux-x64.tar.gz";
 #endif
     }
 

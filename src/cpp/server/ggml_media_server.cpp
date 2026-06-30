@@ -11,11 +11,28 @@
 #include "lemon/utils/path_utils.h"
 #include "lemon/utils/process_manager.h"
 #include "lemon/utils/vulkan_devices.h"
+#include "lemon/runtime_config.h"
+#include "lemon/system_info.h"
 #include <lemon/utils/aixlog.hpp>
 
 namespace lemon {
 
 using backends::BackendUtils;
+
+std::string GgmlMediaServer::media_backend_variant() const {
+    // Opt-in backend selection via "<section>.backend" (default "vulkan", so the
+    // working Vulkan path is unchanged). "rocm" pulls the ROCm build and uses the
+    // shared TheRock runtime (like sd-cpp / llama.cpp).
+    if (auto* cfg = RuntimeConfig::global()) {
+        const std::string section =
+            RuntimeConfig::recipe_to_config_section(media_spec()->recipe);
+        const std::string b = cfg->backend_string(section, "backend");
+        if (!b.empty() && b != "auto") {
+            return b;
+        }
+    }
+    return "vulkan";
+}
 
 std::vector<std::pair<std::string, std::string>> GgmlMediaServer::build_server_env() {
     // Route ggml-vulkan media backends (ace-server, ts-server, ...) to the GPU with
@@ -25,6 +42,32 @@ std::vector<std::pair<std::string, std::string>> GgmlMediaServer::build_server_e
     // devices (any vendor), drops software rasterizers, and orders them so the
     // roomiest real GPU is logical device 0. Empty -> keep ggml's default selection.
     std::vector<std::pair<std::string, std::string>> env;
+
+    // ROCm: the slim binary finds the ROCm runtime in the shared TheRock SDK
+    // (downloaded per the user's GPU arch) plus its own colocated ggml .so. Mirror
+    // sd-cpp/llama.cpp: prepend the TheRock lib dir + the exe dir to the loader path.
+    if (media_backend_variant() == "rocm") {
+        const std::string arch = SystemInfo::get_rocm_arch();
+        const std::string therock_lib = arch.empty() ? "" : BackendUtils::get_therock_lib_path(arch);
+        const std::string exe_dir = std::filesystem::path(exe_path_).parent_path().string();
+#ifdef _WIN32
+        std::string path = therock_lib.empty() ? exe_dir : (therock_lib + ";" + exe_dir);
+        if (const char* p = std::getenv("PATH")) path += std::string(";") + p;
+        env.push_back({"PATH", path});
+#else
+        std::string ld = therock_lib.empty() ? exe_dir : (therock_lib + ":" + exe_dir);
+        if (const char* p = std::getenv("LD_LIBRARY_PATH")) ld += std::string(":") + p;
+        env.push_back({"LD_LIBRARY_PATH", ld});
+#endif
+        return env;
+    }
+
+    // Route ggml-vulkan media backends (ace-server, ts-server, ...) to the GPU with
+    // the most VRAM. ggml-vulkan otherwise uses Vulkan device 0, which on a mixed
+    // multi-GPU box can be the smaller card and OOM on a large generation (long
+    // audio, big meshes). vram_sorted_vulkan_device_order() enumerates the Vulkan
+    // devices (any vendor), drops software rasterizers, and orders them so the
+    // roomiest real GPU is logical device 0. Empty -> keep ggml's default selection.
     std::string order = utils::vram_sorted_vulkan_device_order();
     if (!order.empty()) {
         LOG(INFO, server_name_) << "routing to GPUs by VRAM (most first): GGML_VK_VISIBLE_DEVICES="

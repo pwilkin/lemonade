@@ -45,9 +45,11 @@ protected:
     virtual const backends::BackendSpec* media_spec() const = 0;
 
     // The backend variant to resolve/install (the config key is
-    // "<section>.<variant>_bin"). Defaults to "vulkan" — Lemonade is AMD-centric
-    // and these tools run their GGML graphs on a Vulkan device.
-    virtual std::string media_backend_variant() const { return "vulkan"; }
+    // "<section>.<variant>_bin"). Reads "<section>.backend" from config and
+    // defaults to "vulkan" — Lemonade is AMD-centric and these tools run their
+    // GGML graphs on a Vulkan device. Set e.g. {"acestep": {"backend": "rocm"}}
+    // to pull the ROCm build (which uses a shared TheRock runtime, like sd-cpp).
+    virtual std::string media_backend_variant() const;
 
     // CLI args for the resident server subprocess. Built from the resolved model
     // path (resolved_model_path_) and the chosen port (port_). The binary itself
