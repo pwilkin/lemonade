@@ -224,12 +224,13 @@ void StreamingProxy::forward_byte_stream(
     // JSON error below rather than served as successful media.
     int backend_status = 200;
     std::string error_body;
+    bool forwarded_payload = false;
     static constexpr size_t max_error_body = 64 * 1024;
 
     utils::HttpResponse result = utils::HttpClient::post_stream(
         backend_url,
         request_body,
-        [&sink, &on_chunk, &backend_status, &error_body](const char* data, size_t length) {
+        [&sink, &on_chunk, &backend_status, &error_body, &forwarded_payload](const char* data, size_t length) {
             if (on_chunk) {
                 on_chunk();
             }
@@ -244,6 +245,7 @@ void StreamingProxy::forward_byte_stream(
             if (!sink.write(data, length)) {
                 return false;
             }
+            forwarded_payload = forwarded_payload || length > 0;
 
             return true;
         },
@@ -275,24 +277,28 @@ void StreamingProxy::forward_byte_stream(
         stream_error = true;
         const int status = backend_status != 200 ? backend_status : result.status_code;
         LOG(ERROR, "StreamingProxy") << "Backend returned error " << status
-                                     << (error_body.empty() ? "" : ": " + error_body) << std::endl;
+                                     << (error_body.empty() ? "" : ": " + error_body)
+                                     << (forwarded_payload ? " (payload already streamed; truncating)" : "")
+                                     << std::endl;
 
-        json payload;
-        try {
-            payload = json::parse(error_body);
-        } catch (...) {
-            payload = nullptr;
+        if (!forwarded_payload) {
+            json payload;
+            try {
+                payload = json::parse(error_body);
+            } catch (...) {
+                payload = nullptr;
+            }
+            if (!payload.is_object() || !payload.contains("error")) {
+                std::string message = error_body.empty()
+                    ? "backend returned HTTP " + std::to_string(status)
+                    : error_body;
+                payload = json{{"error", {{"message", message},
+                                          {"type", "backend_error"},
+                                          {"status", status}}}};
+            }
+            const std::string out = payload.dump();
+            sink.write(out.data(), out.size());
         }
-        if (!payload.is_object() || !payload.contains("error")) {
-            std::string message = error_body.empty()
-                ? "backend returned HTTP " + std::to_string(status)
-                : error_body;
-            payload = json{{"error", {{"message", message},
-                                      {"type", "backend_error"},
-                                      {"status", status}}}};
-        }
-        const std::string out = payload.dump();
-        sink.write(out.data(), out.size());
     }
 
     if (!stream_error) {

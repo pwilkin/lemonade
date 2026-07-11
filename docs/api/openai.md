@@ -929,8 +929,8 @@ Speech Generation API. You provide a text input and receive an audio file. This 
 | `voice` | No | The voice to use. All OpenAI-defined voices can be used (`alloy`, `ash`, ...), as well as those defined by the kokoro model (`af_sky`, `am_echo`, ...). Default: `shimmer` | <sub>![Status](https://img.shields.io/badge/partial-yellow)</sub> |
 | `voice` (OpenMOSS) | No | For OpenMOSS models the field is a free-text voice/style instruction instead of a fixed voice name (e.g. `a calm, deep male narrator voice`). | <sub>![Status](https://img.shields.io/badge/available-green)</sub> |
 | `reference_wav_b64` | No | Lemonade extension (OpenMOSS voice cloning): base64-encoded WAV sample of the voice to clone. | <sub>![Status](https://img.shields.io/badge/available-green)</sub> |
-| `response_format` | No | Format of the response. `mp3`, `wav`, `opus`, and `pcm` are supported. Default: `mp3`| <sub>![Status](https://img.shields.io/badge/partial-yellow)</sub> |
-| `stream_format` | No | If set, the response will be streamed. Only `audio` is supported, which will output `pcm` audio. Default: not set| <sub>![Status](https://img.shields.io/badge/partial-yellow)</sub> |
+| `response_format` | No | Format of the response. `mp3`, `wav`, `opus`, and `pcm` are supported, limited to what the loaded model's backend can produce (a format outside the backend's set is rejected with `400`; e.g. OpenMOSS produces only `wav`). When omitted: non-streaming requests default to `mp3` if the backend supports it, otherwise the backend's preferred format; streaming requests default to `pcm` if the backend supports it, otherwise the backend's preferred format. | <sub>![Status](https://img.shields.io/badge/partial-yellow)</sub> |
+| `stream_format` | No | If set, the response will be streamed. Only `audio` is supported, which streams raw audio chunks in the effective `response_format` (see above). Default: not set| <sub>![Status](https://img.shields.io/badge/partial-yellow)</sub> |
 
 ### Example request
 

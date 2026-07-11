@@ -3217,13 +3217,18 @@ void Server::handle_audio_speech(const httplib::Request& req, httplib::Response&
 
         const auto supported_formats =
             router_->audio_speech_supported_formats(request_json["model"].get<std::string>());
-        std::string response_format = "mp3";
-        if (is_streaming) {
-            response_format = "pcm";
-        } else if (request_json.contains("response_format") && request_json["response_format"].is_string()) {
+        auto backend_supports = [&supported_formats](const std::string& fmt) {
+            return supported_formats.empty() ||
+                std::find(supported_formats.begin(), supported_formats.end(),
+                          fmt) != supported_formats.end();
+        };
+        std::string response_format;
+        if (request_json.contains("response_format") && request_json["response_format"].is_string()) {
             response_format = request_json["response_format"].get<std::string>();
-        } else if (!supported_formats.empty()) {
-            response_format = supported_formats.front();
+        } else if (is_streaming) {
+            response_format = backend_supports("pcm") ? "pcm" : supported_formats.front();
+        } else {
+            response_format = backend_supports("mp3") ? "mp3" : supported_formats.front();
         }
         if (!MIME_TYPES.contains(response_format)) {
             res.status = 400;
