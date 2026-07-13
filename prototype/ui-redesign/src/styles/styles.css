@@ -4093,6 +4093,12 @@ input, textarea {
   font-size: var(--text-xs);
 }
 
+.autoopt-stage__note {
+  flex-basis: 100%;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
 .autoopt-detail__body {
   display: flex;
   flex-direction: column;

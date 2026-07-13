@@ -89,6 +89,9 @@ const AutoOptWizard: React.FC<{
   const [runId, setRunId] = useState<string | null>(null);
   const [storeState, setStoreState] = useState<AutoOptState>(() => autoOptStore.snapshot());
   const slideoverRef = useRef<HTMLElement>(null);
+  // system-info can take seconds on a cold server; its RAM suggestion must
+  // never overwrite a headroom level the user has already picked.
+  const ramTouchedRef = useRef(false);
 
   useFocusTrap(slideoverRef, open);
 
@@ -109,21 +112,18 @@ const AutoOptWizard: React.FC<{
     setSubmitError(null);
     setRunId(null);
     setConsent(false);
+    ramTouchedRef.current = false;
     let alive = true;
     api.models(true).then(data => { if (alive) setModels((data.data || []).filter(isEligibleModel)); }).catch(() => {
       if (alive) setModels(api.allModels.filter(isEligibleModel));
     });
-    api.systemInfo().then(info => {
+    const applySuggestion = (info: Record<string, unknown> | null) => {
       if (!alive) return;
       const gb = physicalMemoryGb(info);
       setRamGb(gb);
-      if (gb !== null) setRamHeadroom(suggestedHeadroom(gb));
-    }).catch(() => {
-      if (!alive) return;
-      const gb = physicalMemoryGb(api.systemInfoData);
-      setRamGb(gb);
-      if (gb !== null) setRamHeadroom(suggestedHeadroom(gb));
-    });
+      if (gb !== null && !ramTouchedRef.current) setRamHeadroom(suggestedHeadroom(gb));
+    };
+    api.systemInfo().then(applySuggestion).catch(() => applySuggestion(api.systemInfoData));
     return () => { alive = false; };
   }, [open]);
 
@@ -286,7 +286,10 @@ const AutoOptWizard: React.FC<{
                 {RAM_STEP.suggestionChip(Math.round(ramGb))}
               </span>
             )}
-            {renderOptions(RAM_STEP.options, ramHeadroom, setRamHeadroom, 'ram')}
+            {renderOptions(RAM_STEP.options, ramHeadroom, value => {
+              ramTouchedRef.current = true;
+              setRamHeadroom(value);
+            }, 'ram')}
           </fieldset>
         );
       case 'vision':
@@ -327,7 +330,7 @@ const AutoOptWizard: React.FC<{
               <dt>Model</dt><dd>{selectedModel || '—'}</dd>
               <dt>Usage</dt><dd>{parallelMode === 'parallel' ? `Parallel · ${slots} slots${dedicated ? ' · dedicated server' : ''}` : 'Single user'}</dd>
               <dt>KV cache</dt><dd>{KV_QUANT_LABELS[kvQuant]}</dd>
-              <dt>RAM headroom</dt><dd>{RAM_HEADROOM_LABELS[ramHeadroom]}</dd>
+              <dt>Prompt cache</dt><dd>{RAM_HEADROOM_LABELS[ramHeadroom]}</dd>
               {showVisionStep && <><dt>Vision</dt><dd>{useVision ? 'Image input kept' : 'Text only'}</dd></>}
               <dt>Budget</dt><dd>{BUDGET_LABELS[budget]}</dd>
               <dt>Network</dt><dd>{allowNetwork ? 'Fetch model metadata from Hugging Face' : 'No network access'}</dd>

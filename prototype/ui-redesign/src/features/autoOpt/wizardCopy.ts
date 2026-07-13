@@ -57,29 +57,37 @@ export const KV_QUANT_STEP = {
 };
 
 export const RAM_STEP = {
-  legend: 'How much system memory should stay free?',
-  help: 'AutoOpt leaves headroom so the rest of your system stays responsive while the model is loaded.',
+  legend: 'How much system RAM should stay free for other applications?',
+  help: "This sizes llama.cpp's prompt cache: checkpoints of already-processed conversations kept in "
+    + 'system RAM (--cache-ram, -ctxcp) so that switching back to a swapped-out conversation is instant '
+    + 'instead of re-processing its whole prompt. A bigger cache means faster conversation switching; '
+    + 'a smaller one keeps more RAM free for everything else you run.',
   suggestionChip: (gb: number) => `Suggested for this machine (${gb} GB RAM)`,
   options: [
     {
       value: 'normal' as AutoOptRamHeadroom,
-      label: 'Normal headroom',
-      description: 'Keeps a comfortable reserve for your browser, IDE, and other apps. Recommended on machines with plenty of RAM.',
+      label: 'Default cache',
+      description: "Keeps llama.cpp's default prompt-cache size. Every recent conversation resumes "
+        + 'instantly; pick this when RAM is plentiful.',
     },
     {
       value: 'reduced' as AutoOptRamHeadroom,
-      label: 'Reduced headroom',
-      description: 'Gives the model more memory and keeps a smaller reserve. Fine when the model is your main workload.',
+      label: 'Reduced cache (4 GB, 16 checkpoints)',
+      description: 'Caps the prompt cache at 4 GB of system RAM. Recent conversations still resume '
+        + 'instantly; more RAM stays free for heavier applications running next to the model.',
     },
     {
       value: 'minimal' as AutoOptRamHeadroom,
-      label: 'Minimal headroom',
-      description: 'Nearly everything goes to the model. Other apps may swap or stutter while it is loaded.',
+      label: 'Minimal cache (2 GB, 8 checkpoints)',
+      description: 'Caps the prompt cache at 2 GB. Keeps most system RAM free; switching back to '
+        + 'older conversations re-processes their prompt instead of resuming instantly.',
     },
     {
       value: 'disabled' as AutoOptRamHeadroom,
-      label: 'Disabled (no reserve)',
-      description: 'No memory reserve at all. Warning: on hybrid or recurrent models the KV cache cannot be shifted, so an out-of-memory context overflow forces a full prompt recompute instead of a cheap truncation.',
+      label: 'No cache (0 GB)',
+      description: 'No prompt cache at all: every conversation switch re-processes the full prompt '
+        + 'from scratch. Warning: hybrid and recurrent models cannot shift their cache, so any cache '
+        + 'miss already forces a full prompt recompute — AutoOpt bumps them back to the minimal cache.',
     },
   ],
 };
@@ -112,12 +120,12 @@ export const BUDGET_STEP = {
     {
       value: 'standard' as AutoOptBudget,
       label: 'Benchmark',
-      description: 'Fit probes, a backend duel at depth 0, a batch ladder on unified-memory machines, an MTP sweep {2,3,4} where supported, and flag validation. (~2–6 min)',
+      description: 'Fit probes, a backend duel at depth 0 and at deep context (~30k tokens), a batch ladder on unified-memory machines, an MTP sweep {2,3,4} where supported, and flag validation. (~5–15 min)',
     },
     {
       value: 'thorough' as AutoOptBudget,
       label: 'Deep Benchmark',
-      description: 'Adds deep-context depth points, measured KV-quant impact, full batch ladders, MTP {1..6}, and a real-load smoke test. (~15–45 min)',
+      description: 'Adds measured KV-quant impact, full batch ladders, MTP {1..6}, and a real-load smoke test. (~15–45 min)',
     },
   ],
   networkLabel: 'Allow fetching model metadata from Hugging Face',
@@ -143,10 +151,10 @@ export const KV_QUANT_LABELS: Record<AutoOptKvCacheQuant, string> = {
 };
 
 export const RAM_HEADROOM_LABELS: Record<AutoOptRamHeadroom, string> = {
-  normal: 'Normal',
-  reduced: 'Reduced',
-  minimal: 'Minimal',
-  disabled: 'Disabled',
+  normal: 'Default cache',
+  reduced: 'Reduced cache (4 GB)',
+  minimal: 'Minimal cache (2 GB)',
+  disabled: 'No cache',
 };
 
 export const BUDGET_LABELS: Record<AutoOptBudget, string> = {

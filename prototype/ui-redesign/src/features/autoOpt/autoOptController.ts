@@ -172,13 +172,37 @@ async function resolveBaseModelRepo(
   return '';
 }
 
-function samplingFromGenerationConfig(gc: Record<string, unknown>, base: string): SamplingDefaults {
-  const sd: SamplingDefaults = { source: `hf:${base}/generation_config.json` };
+function samplingFromConfig(gc: Record<string, unknown>, base: string, file: string): SamplingDefaults {
+  const sd: SamplingDefaults = { source: `hf:${base}/${file}` };
   if (typeof gc.temperature === 'number') sd.temperature = gc.temperature;
   if (typeof gc.top_p === 'number') sd.top_p = gc.top_p;
   if (typeof gc.min_p === 'number') sd.min_p = gc.min_p;
   if (typeof gc.top_k === 'number') sd.top_k = gc.top_k;
   return sd;
+}
+
+function hasSamplingValues(sd: SamplingDefaults): boolean {
+  return sd.temperature !== undefined || sd.top_p !== undefined
+    || sd.min_p !== undefined || sd.top_k !== undefined;
+}
+
+async function fetchSamplingDefaults(base: string, signal: AbortSignal): Promise<SamplingDefaults | null> {
+  const gc = await fetchHfJson(`https://huggingface.co/${base}/resolve/main/generation_config.json`, signal);
+  if (gc) {
+    const sd = samplingFromConfig(gc, base, 'generation_config.json');
+    if (hasSamplingValues(sd)) return sd;
+  }
+  const cfg = await fetchHfJson(`https://huggingface.co/${base}/resolve/main/config.json`, signal);
+  if (cfg) {
+    const nested = cfg.generation_config;
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      const sd = samplingFromConfig(nested as Record<string, unknown>, base, 'config.json');
+      if (hasSamplingValues(sd)) return sd;
+    }
+    const top = samplingFromConfig(cfg, base, 'config.json');
+    if (hasSamplingValues(top)) return top;
+  }
+  return null;
 }
 
 function mtpProbePrompt(): string {
@@ -250,15 +274,23 @@ export async function executeAutoOptRun(
   const hardware = hw!;
   const modelFacts = facts!;
 
-  // ── hf_metadata (direct Hugging Face fetch; soft-fail) ───────────────
+  // ── hf_metadata (direct Hugging Face fetch) ──────────────────────────
+  // A model that simply publishes no sampling defaults is a normal outcome
+  // (stage completes with a note); only genuine fetch failures are failures.
   if (answers.allow_network) {
     await runStage('hf_metadata', async () => {
       const base = await resolveBaseModelRepo(modelFacts.base_model_repo, modelFacts.checkpoint, signal);
-      if (!base) throw new Error('base model not resolvable');
-      const gc = await fetchHfJson(`https://huggingface.co/${base}/resolve/main/generation_config.json`, signal);
-      if (!gc) throw new Error(`no generation_config.json on ${base}`);
-      sampling = samplingFromGenerationConfig(gc, base);
-      cb.stage('hf_metadata', 'running', { data: { base_model: base, generation_config_found: true } });
+      if (!base) {
+        cb.stage('hf_metadata', 'running', { data: { note: 'no sampling defaults published (base model not resolvable)' } });
+        return;
+      }
+      const found = await fetchSamplingDefaults(base, signal);
+      if (found) {
+        sampling = found;
+        cb.stage('hf_metadata', 'running', { data: { base_model: base, sampling_source: found.source } });
+      } else {
+        cb.stage('hf_metadata', 'running', { data: { base_model: base, note: 'no sampling defaults published' } });
+      }
     });
   } else {
     cb.stage('hf_metadata', 'skipped');
@@ -318,12 +350,18 @@ export async function executeAutoOptRun(
   // ── bench_matrix ─────────────────────────────────────────────────────
   if (withBench) {
     await runStage('bench_matrix', async () => {
+      // Every benchmark tier duels at depth 0 AND at deep context: decode speed
+      // at depth is what separates backends. fitted_ctx 0 means "no cap needed",
+      // so the trained window bounds the deep point instead.
       const primaryFit = fits.find(f => f.ok && f.extra_args === '') || null;
       const depths: number[] = [0];
-      if (primaryFit && primaryFit.fitted_ctx >= 32768 && budget === 'thorough') {
+      const effectiveCtx = primaryFit
+        ? (primaryFit.fitted_ctx > 0 ? primaryFit.fitted_ctx : modelFacts.n_ctx_train)
+        : 0;
+      if (effectiveCtx >= 32768) {
         depths.push(30000);
-      } else if (primaryFit && primaryFit.fitted_ctx >= 8192 && budget === 'thorough') {
-        depths.push(Math.floor(0.8 * primaryFit.fitted_ctx));
+      } else if (effectiveCtx >= 8192) {
+        depths.push(Math.floor(0.8 * effectiveCtx));
       }
 
       const runBench = async (backend: string, body: { d: number | number[]; b?: number; ub?: number }, ladder: boolean) => {

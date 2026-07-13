@@ -83,15 +83,16 @@ function benchPointsFor(body: Record<string, unknown>): Array<Record<string, unk
       error: '',
     }];
   }
-  return [{
+  const depths = Array.isArray(body.d) ? body.d as number[] : [Number(body.d ?? 0)];
+  return depths.map(d => ({
     backend,
-    params: { d: 0 },
-    pp_avg_ts: backend === 'vulkan' ? 1020.5 : 850.1,
-    tg_avg_ts: backend === 'vulkan' ? 31.9 : 28.4,
-    n_depth: 0,
+    params: { d },
+    pp_avg_ts: (backend === 'vulkan' ? 1020.5 : 850.1) * (d > 0 ? 0.6 : 1),
+    tg_avg_ts: (backend === 'vulkan' ? 31.9 : 28.4) * (d > 0 ? 0.85 : 1),
+    n_depth: d,
     ok: true,
     error: '',
-  }];
+  }));
 }
 
 interface MockCounts {
@@ -150,6 +151,8 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
 
   await page.route('https://huggingface.co/org/base-model/resolve/main/generation_config.json',
     route => route.fulfill({ json: { temperature: 0.7, top_p: 0.8, top_k: 20 } }));
+  await page.route('https://huggingface.co/org/base-model/resolve/main/config.json',
+    route => route.fulfill({ status: 404, body: 'Not Found' }));
   await page.route('https://huggingface.co/api/models/**', route => route.fulfill({
     json: { cardData: { base_model: 'org/base-model' } },
   }));
@@ -254,6 +257,8 @@ test.describe('AutoOpt wizard + controller', () => {
 
     await expect(page.locator('[data-autoopt-step="ram"]')).toBeVisible();
     await expect(page.locator('[data-autoopt-ram-suggestion]')).toContainText('Suggested for this machine (64 GB RAM)');
+    await page.locator('[data-autoopt-option="ram:minimal"]').click();
+    await expect(page.locator('[data-autoopt-option="ram:minimal"]')).toHaveAttribute('aria-pressed', 'true');
     await page.locator('[data-autoopt-next]').click();
 
     // Vision step skipped for a text-only model.
@@ -287,8 +292,10 @@ test.describe('AutoOpt wizard + controller', () => {
     const realFits = counts.fit.filter(body => body.model === CHAT_MODEL);
     expect(realFits.length).toBeGreaterThanOrEqual(2);
     expect(realFits[0]).toMatchObject({ model: CHAT_MODEL, backend: 'vulkan', fit_target_mib: 1024 });
-    const duelBackends = counts.bench.filter(body => body.b === undefined).map(body => body.backend);
-    expect(duelBackends).toEqual(['vulkan', 'rocm']);
+    const duelRequests = counts.bench.filter(body => body.b === undefined);
+    expect(duelRequests.map(body => body.backend)).toEqual(['vulkan', 'rocm']);
+    // Every benchmark tier duels at BOTH depth 0 and deep context.
+    expect(duelRequests.map(body => body.d)).toEqual([[0, 30000], [0, 30000]]);
     const ladderRungs = counts.bench.filter(body => body.b !== undefined).map(body => body.b);
     expect(ladderRungs).toEqual([512, 2048, 8192]);
 
@@ -296,9 +303,13 @@ test.describe('AutoOpt wizard + controller', () => {
     await page.locator('[data-autoopt-inspect]').click();
     await page.waitForSelector('[data-autoopt-detail]');
     await expect(page.locator('[data-autoopt-rec-args]')).toContainText('-ctk q8_0 -ctv q8_0');
+    await expect(page.locator('[data-autoopt-rec-args]')).toContainText('--cache-ram 2048 -ctxcp 8');
     await expect(page.locator('[data-autoopt-rec-args]')).toContainText('-b 2048 -ub 2048');
-    await expect(page.locator('[data-autoopt-bench-duel] tbody tr')).toHaveCount(2);
+    await expect(page.locator('[data-autoopt-bench-duel] tbody tr')).toHaveCount(4);
     await expect(page.locator('[data-autoopt-bench-ladder] tbody tr')).toHaveCount(3);
+    // Ladder points are prefill-only; the ladder table carries no tg column.
+    await expect(page.locator('[data-autoopt-bench-ladder] thead')).not.toContainText('tg t/s');
+    await expect(page.locator('[data-autoopt-bench-duel] thead')).toContainText('tg t/s');
     await expect(page.locator('[data-autoopt-alternatives] tbody tr')).toHaveCount(3);
   });
 
@@ -328,6 +339,92 @@ test.describe('AutoOpt wizard + controller', () => {
 
     expect(counts.bench).toHaveLength(0);
     expect(counts.unload).toBe(0);
+  });
+
+  test('a late system-info reply must not clobber an explicit RAM-headroom choice', async ({ page }) => {
+    const counts = await mockServer(page);
+    await page.unroute('**/api/v1/system-info**');
+    await page.route('**/api/v1/system-info**', async route => {
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      await route.fulfill({ json: SYSTEM_INFO });
+    });
+
+    await openWizard(page);
+    await page.locator('[data-autoopt-model-select]').selectOption(CHAT_MODEL);
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-next]').click();
+    await expect(page.locator('[data-autoopt-step="ram"]')).toBeVisible();
+    await page.locator('[data-autoopt-option="ram:minimal"]').click();
+    await expect(page.locator('[data-autoopt-option="ram:minimal"]')).toHaveAttribute('aria-pressed', 'true');
+
+    // Let the delayed system-info suggestion land, then verify the choice survives.
+    await page.waitForTimeout(3000);
+    await expect(page.locator('[data-autoopt-option="ram:minimal"]')).toHaveAttribute('aria-pressed', 'true');
+
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-option="budget:quick"]').click();
+    await page.locator('[data-autoopt-next]').click();
+    await expect(page.locator('[data-autoopt-step="review"]')).toContainText('Minimal');
+    await page.locator('[data-autoopt-start]').click();
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--completed')).toHaveCount(5, { timeout: 15000 });
+
+    await page.locator('[data-autoopt-wizard] .slideover__close').click();
+    await page.locator('[data-autoopt-inspect]').click();
+    await page.waitForSelector('[data-autoopt-detail]');
+    await expect(page.locator('[data-autoopt-rec-args]')).toContainText('--cache-ram 2048 -ctxcp 8');
+    expect(counts.fit.length).toBeGreaterThan(0);
+  });
+
+  async function runFastScan(page: Page) {
+    await openWizard(page);
+    await page.locator('[data-autoopt-model-select]').selectOption(CHAT_MODEL);
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-option="budget:quick"]').click();
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-start]').click();
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--skipped')).toHaveCount(2, { timeout: 15000 });
+  }
+
+  test('a model without published sampling defaults completes hf_metadata with a neutral note', async ({ page }) => {
+    await mockServer(page);
+    await page.unroute('https://huggingface.co/org/base-model/resolve/main/generation_config.json');
+    await page.route('https://huggingface.co/org/base-model/resolve/main/generation_config.json',
+      route => route.fulfill({ status: 404, body: 'Not Found' }));
+
+    await runFastScan(page);
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--completed')).toHaveCount(5, { timeout: 15000 });
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--failed')).toHaveCount(0);
+    await page.locator('[data-autoopt-wizard] .slideover__close').click();
+
+    await page.locator('[data-autoopt-inspect]').click();
+    await page.waitForSelector('[data-autoopt-detail]');
+    await expect(page.locator('.autoopt-stage--failed')).toHaveCount(0);
+    await expect(page.locator('.autoopt-stage__error')).toHaveCount(0);
+    await expect(page.locator('.autoopt-stage__note')).toContainText('no sampling defaults published');
+  });
+
+  test('hf_metadata falls back to generation defaults inside config.json', async ({ page }) => {
+    await mockServer(page);
+    await page.unroute('https://huggingface.co/org/base-model/resolve/main/generation_config.json');
+    await page.route('https://huggingface.co/org/base-model/resolve/main/generation_config.json',
+      route => route.fulfill({ status: 404, body: 'Not Found' }));
+    await page.unroute('https://huggingface.co/org/base-model/resolve/main/config.json');
+    await page.route('https://huggingface.co/org/base-model/resolve/main/config.json',
+      route => route.fulfill({ json: { architectures: ['Qwen3ForCausalLM'], generation_config: { temperature: 0.6, top_k: 20 } } }));
+
+    await runFastScan(page);
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--completed')).toHaveCount(5, { timeout: 15000 });
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--failed')).toHaveCount(0);
+    await page.locator('[data-autoopt-wizard] .slideover__close').click();
+
+    await page.locator('[data-autoopt-inspect]').click();
+    await page.waitForSelector('[data-autoopt-detail]');
+    await expect(page.locator('.autoopt-rec-card__chips')).toContainText('temp 0.6');
+    await expect(page.locator('.autoopt-stage__note')).toHaveCount(0);
   });
 
   test('model picker only offers downloaded llama.cpp models and explains the scope', async ({ page }) => {

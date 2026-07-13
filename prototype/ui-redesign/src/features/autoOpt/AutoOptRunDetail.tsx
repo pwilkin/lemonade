@@ -186,6 +186,7 @@ const AutoOptRunDetail: React.FC<{
                         {stage.duration_ms !== undefined && <span className="autoopt-stage__duration">{formatDuration(stage.duration_ms)}</span>}
                         <span className="autoopt-stage__status">{stage.status}</span>
                         {stage.error && <span className="autoopt-stage__error">⚠ {stage.error}</span>}
+                        {typeof stage.data?.note === 'string' && <span className="autoopt-stage__note">{stage.data.note}</span>}
                       </li>
                     ))}
                   </ul>
@@ -222,7 +223,7 @@ const AutoOptRunDetail: React.FC<{
                     <div className="autoopt-alt-table-wrap">
                       <table className="autoopt-alt-table" data-autoopt-bench-ladder>
                         <thead>
-                          <tr><th>Backend</th><th>batch</th><th>ubatch</th><th>pp t/s</th><th>tg t/s</th></tr>
+                          <tr><th>Backend</th><th>batch</th><th>ubatch</th><th>pp t/s</th></tr>
                         </thead>
                         <tbody>
                           {ladder.map((row, index) => (
@@ -231,7 +232,6 @@ const AutoOptRunDetail: React.FC<{
                               <td>{row.params?.b ?? '—'}</td>
                               <td>{row.params?.ub ?? '—'}</td>
                               <td>{formatNumber(row.pp_avg_ts)}</td>
-                              <td>{formatNumber(row.tg_avg_ts)}</td>
                             </tr>
                           ))}
                         </tbody>
