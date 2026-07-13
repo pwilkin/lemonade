@@ -4113,6 +4113,11 @@ input, textarea {
   font-size: var(--text-sm);
 }
 
+.autoopt-detail__cta-help {
+  margin: 0;
+  padding: var(--space-2) var(--space-5) 0;
+}
+
 .autoopt-rec-card {
   display: flex;
   flex-direction: column;

@@ -5,8 +5,9 @@ import { autoOptStore, AutoOptState } from './autoOptStore';
 import { createPresetFromRun, applyRunNow } from './presetFromRun';
 import {
   AutoOptRecommendation,
-  AutoOptRunDetail as AutoOptRunDetailData,
+  AutoOptRunRecord,
   AutoOptStage,
+  BenchPoint,
   isAutoOptRunActive,
 } from './autoOptTypes';
 
@@ -32,25 +33,18 @@ function stageGlyph(stage: AutoOptStage): string {
   }
 }
 
-function expectedDepthKeys(recs: AutoOptRecommendation[], field: 'pp_ts' | 'tg_ts'): string[] {
-  const keys = new Set<string>();
-  for (const rec of recs) {
-    const value = rec.expected?.[field];
-    if (value && typeof value === 'object') Object.keys(value).forEach(key => keys.add(key));
-  }
-  return [...keys].sort();
+function expectedValue(rec: AutoOptRecommendation, field: 'pp_ts' | 'tg_ts'): string {
+  return formatNumber(rec.expected?.[field]);
 }
 
-function expectedValue(rec: AutoOptRecommendation, field: 'pp_ts' | 'tg_ts', depthKey?: string): string {
-  const value = rec.expected?.[field];
-  if (value === undefined) return '—';
-  if (typeof value === 'number') return depthKey && depthKey !== 'd0' ? '—' : formatNumber(value);
-  return formatNumber(depthKey ? value[depthKey] : Object.values(value)[0]);
+function benchLadderRows(run: AutoOptRunRecord | undefined): BenchPoint[] {
+  const bench = run?.measurements?.bench || [];
+  return bench.filter(row => row.params?.ladder === true);
 }
 
-function benchLadderRows(detail: AutoOptRunDetailData | undefined): Array<Record<string, unknown>> {
-  const bench = detail?.measurements?.bench || [];
-  return bench.filter(row => row && typeof row === 'object' && ('b' in row || 'ub' in row));
+function benchDuelRows(run: AutoOptRunRecord | undefined): BenchPoint[] {
+  const bench = run?.measurements?.bench || [];
+  return bench.filter(row => row.params?.ladder !== true && row.params?.spec_n === undefined);
 }
 
 const CopyArgsButton: React.FC<{ text: string }> = ({ text }) => {
@@ -104,18 +98,16 @@ const AutoOptRunDetail: React.FC<{
     return () => document.removeEventListener('keydown', onKey);
   }, [open, runId, onClose]);
 
-  const summary = runId ? storeState.runs.find(run => run.id === runId) : undefined;
-  const detail = runId ? storeState.details[runId] : undefined;
-  const run = detail || (summary ? { ...summary, stages: [] as AutoOptStage[] } : undefined);
-  const result = detail?.result;
+  const run = runId ? storeState.runs.find(candidate => candidate.id === runId) : undefined;
+  const result = run?.result;
 
   const recommendations = useMemo<AutoOptRecommendation[]>(() => {
     if (!result) return [];
     return [result.primary, ...(result.alternatives || [])];
   }, [result]);
   const selectedRec = recommendations[selectedRecIndex] || recommendations[0];
-  const ppDepthKeys = expectedDepthKeys(recommendations, 'pp_ts');
-  const ladder = benchLadderRows(detail);
+  const ladder = benchLadderRows(run);
+  const duel = benchDuelRows(run);
 
   const modelInfo = useMemo(() => {
     if (!run) return null;
@@ -124,25 +116,30 @@ const AutoOptRunDetail: React.FC<{
   }, [run]);
 
   const runAction = useCallback(async (action: 'create' | 'create-apply' | 'try') => {
-    if (!detail || !selectedRec) return;
+    if (!run || !selectedRec) return;
     setActionError(null);
     setNotice(null);
     try {
       if (action === 'create') {
-        const preset = createPresetFromRun(detail, selectedRec, modelInfo);
-        setNotice(`Created preset "${preset.name}" and linked it to ${detail.model}.`);
+        const preset = createPresetFromRun(run, selectedRec, modelInfo);
+        setNotice(`Created preset "${preset.name}" and selected it for future loads of ${run.model}.`);
       } else if (action === 'create-apply') {
-        const preset = createPresetFromRun(detail, selectedRec, modelInfo);
-        await applyRunNow(detail, selectedRec, { save: true });
-        setNotice(`Created preset "${preset.name}" and applied it to ${detail.model}.`);
+        const preset = createPresetFromRun(run, selectedRec, modelInfo);
+        try {
+          await applyRunNow(run, selectedRec, { save: true });
+        } catch (err) {
+          setActionError(`Preset "${preset.name}" was created and selected, but loading ${run.model} failed: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+        setNotice(`Created preset "${preset.name}" and applied it to ${run.model}.`);
       } else {
-        await applyRunNow(detail, selectedRec, { save: false });
-        setNotice(`Loaded ${detail.model} with the recommended settings (nothing saved).`);
+        await applyRunNow(run, selectedRec, { save: false });
+        setNotice(`Loaded ${run.model} with the recommended settings (nothing saved).`);
       }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Action failed.');
     }
-  }, [detail, selectedRec, modelInfo]);
+  }, [run, selectedRec, modelInfo]);
 
   if (!open) return null;
 
@@ -195,25 +192,46 @@ const AutoOptRunDetail: React.FC<{
                 </div>
               )}
 
-              {detail?.measurements && (detail.measurements.fit.length > 0 || detail.measurements.bench.length > 0) && (
+              {run.measurements && (run.measurements.fit.length > 0 || run.measurements.bench.length > 0) && (
                 <div className="slideover__section">
                   <h3>Measurements</h3>
                   <p className="preset-help">
-                    {detail.measurements.fit.length} memory-fit probes · {detail.measurements.bench.length} benchmark samples
+                    {run.measurements.fit.length} memory-fit probes · {run.measurements.bench.length} benchmark samples
                   </p>
+                  {duel.length > 0 && (
+                    <div className="autoopt-alt-table-wrap">
+                      <table className="autoopt-alt-table" data-autoopt-bench-duel>
+                        <thead>
+                          <tr><th>Backend</th><th>Depth</th><th>pp t/s</th><th>tg t/s</th><th>Status</th></tr>
+                        </thead>
+                        <tbody>
+                          {duel.map((row, index) => (
+                            <tr key={index}>
+                              <td>{row.backend}</td>
+                              <td>{row.params?.d ?? '—'}</td>
+                              <td>{formatNumber(row.pp_avg_ts)}</td>
+                              <td>{formatNumber(row.tg_avg_ts)}</td>
+                              <td>{row.ok === false ? (row.error || 'failed') : 'ok'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                   {ladder.length > 0 && (
                     <div className="autoopt-alt-table-wrap">
                       <table className="autoopt-alt-table" data-autoopt-bench-ladder>
                         <thead>
-                          <tr><th>batch</th><th>ubatch</th><th>pp t/s</th><th>tg t/s</th></tr>
+                          <tr><th>Backend</th><th>batch</th><th>ubatch</th><th>pp t/s</th><th>tg t/s</th></tr>
                         </thead>
                         <tbody>
                           {ladder.map((row, index) => (
                             <tr key={index}>
-                              <td>{String(row.b ?? '—')}</td>
-                              <td>{String(row.ub ?? '—')}</td>
-                              <td>{formatNumber(row.pp_ts)}</td>
-                              <td>{formatNumber(row.tg_ts)}</td>
+                              <td>{row.backend}</td>
+                              <td>{row.params?.b ?? '—'}</td>
+                              <td>{row.params?.ub ?? '—'}</td>
+                              <td>{formatNumber(row.pp_avg_ts)}</td>
+                              <td>{formatNumber(row.tg_avg_ts)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -231,8 +249,8 @@ const AutoOptRunDetail: React.FC<{
                       <strong>{selectedRec.label}</strong>
                       <div className="autoopt-rec-card__chips">
                         {selectedRec.llamacpp_backend && <span className="autoopt-chip">{selectedRec.llamacpp_backend}</span>}
-                        {selectedRec.ctx_size !== undefined && <span className="autoopt-chip">ctx {selectedRec.ctx_size.toLocaleString()}</span>}
-                        {selectedRec.mmproj_enabled !== undefined && <span className="autoopt-chip">vision {selectedRec.mmproj_enabled ? 'on' : 'off'}</span>}
+                        {selectedRec.ctx_size > 0 && <span className="autoopt-chip">ctx {selectedRec.ctx_size.toLocaleString()}</span>}
+                        {selectedRec.mmproj_enabled === false && <span className="autoopt-chip">vision off</span>}
                         {result?.sampling_defaults?.temperature !== undefined && <span className="autoopt-chip">temp {result.sampling_defaults.temperature}</span>}
                         {result?.sampling_defaults?.min_p !== undefined && <span className="autoopt-chip">min_p {result.sampling_defaults.min_p}</span>}
                       </div>
@@ -261,9 +279,7 @@ const AutoOptRunDetail: React.FC<{
                           <th>Option</th>
                           <th>Backend</th>
                           <th>Context</th>
-                          {ppDepthKeys.length > 0
-                            ? ppDepthKeys.map(key => <th key={key}>pp t/s @{key.replace(/^d/, '')}</th>)
-                            : <th>pp t/s</th>}
+                          <th>pp t/s</th>
                           <th>tg t/s</th>
                           <th>VRAM MiB</th>
                           <th />
@@ -275,9 +291,7 @@ const AutoOptRunDetail: React.FC<{
                             <td>{rec.label}</td>
                             <td>{rec.llamacpp_backend || '—'}</td>
                             <td>{rec.ctx_size !== undefined ? rec.ctx_size.toLocaleString() : '—'}</td>
-                            {ppDepthKeys.length > 0
-                              ? ppDepthKeys.map(key => <td key={key}>{expectedValue(rec, 'pp_ts', key)}</td>)
-                              : <td>{expectedValue(rec, 'pp_ts')}</td>}
+                            <td>{expectedValue(rec, 'pp_ts')}</td>
                             <td>{expectedValue(rec, 'tg_ts')}</td>
                             <td>{rec.expected?.vram_mib !== undefined ? rec.expected.vram_mib.toLocaleString() : '—'}</td>
                             <td>
@@ -308,17 +322,24 @@ const AutoOptRunDetail: React.FC<{
               {actionError && <p className="preset-error" role="alert">⚠ {actionError}</p>}
             </div>
 
+            {run.status === 'completed' && selectedRec && (
+              <p className="preset-help autoopt-detail__cta-help" data-autoopt-cta-help>
+                &ldquo;Create preset&rdquo; creates the preset and selects it for this model&rsquo;s future loads.
+                &ldquo;Create preset &amp; apply now&rdquo; additionally loads the model with it right away.
+                &ldquo;Try now without saving&rdquo; loads once and saves nothing.
+              </p>
+            )}
             <div className="slideover__foot">
               {run.status === 'completed' && selectedRec ? (
                 <>
-                  <button className="btn btn--ghost" onClick={() => void runAction('try')} data-autoopt-try-now>Try now without saving</button>
-                  <button className="btn btn--ghost" onClick={() => void runAction('create')} data-autoopt-create-preset>Create preset</button>
-                  <button className="btn btn--primary" onClick={() => void runAction('create-apply')} data-autoopt-create-apply>Create preset &amp; apply now</button>
+                  <button className="btn btn--ghost" onClick={() => void runAction('try')} title="Loads once with the recommended settings and saves nothing" data-autoopt-try-now>Try now without saving</button>
+                  <button className="btn btn--ghost" onClick={() => void runAction('create')} title="Creates the preset and selects it for this model's future loads" data-autoopt-create-preset>Create preset</button>
+                  <button className="btn btn--primary" onClick={() => void runAction('create-apply')} title="Creates the preset, selects it for this model's future loads, and loads the model with it now" data-autoopt-create-apply>Create preset &amp; apply now</button>
                 </>
               ) : (
                 <>
-                  {summary && isAutoOptRunActive(summary) && (
-                    <button className="btn btn--ghost" onClick={() => void autoOptStore.cancelRun(run.id).catch(() => {})}>Cancel run</button>
+                  {isAutoOptRunActive(run) && (
+                    <button className="btn btn--ghost" onClick={() => autoOptStore.cancelRun(run.id)}>Cancel run</button>
                   )}
                   <button className="btn btn--primary" onClick={onClose}>Close</button>
                 </>

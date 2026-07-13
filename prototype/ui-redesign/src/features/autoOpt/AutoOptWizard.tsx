@@ -34,7 +34,10 @@ function modelName(model: ModelInfo): string {
   return String((model as Record<string, unknown>).model_name || model.name || model.id || '').trim();
 }
 
-function isChatCapable(model: ModelInfo): boolean {
+function isEligibleModel(model: ModelInfo): boolean {
+  if ((model as Record<string, unknown>).downloaded !== true) return false;
+  const recipe = String((model as Record<string, unknown>).recipe || '').trim().toLowerCase();
+  if (recipe !== 'llamacpp') return false;
   const caps = labelsFor(model);
   return caps.includes('chat') || caps.includes('omni');
 }
@@ -107,8 +110,8 @@ const AutoOptWizard: React.FC<{
     setRunId(null);
     setConsent(false);
     let alive = true;
-    api.models(true).then(data => { if (alive) setModels((data.data || []).filter(isChatCapable)); }).catch(() => {
-      if (alive) setModels(api.allModels.filter(isChatCapable));
+    api.models(true).then(data => { if (alive) setModels((data.data || []).filter(isEligibleModel)); }).catch(() => {
+      if (alive) setModels(api.allModels.filter(isEligibleModel));
     });
     api.systemInfo().then(info => {
       if (!alive) return;
@@ -146,7 +149,8 @@ const AutoOptWizard: React.FC<{
   ], [showVisionStep]);
 
   const stepIndex = steps.indexOf(step);
-  const consentRequired = loadedModels.length > 0;
+  const benchmarkTier = budget !== 'quick';
+  const consentRequired = benchmarkTier && loadedModels.length > 0;
   const canStart = !!selectedModel && (!consentRequired || consent);
 
   const goBack = useCallback(() => {
@@ -185,7 +189,6 @@ const AutoOptWizard: React.FC<{
   }, [buildRequest]);
 
   const activeRun = runId ? storeState.runs.find(run => run.id === runId) : undefined;
-  const activeDetail = runId ? storeState.details[runId] : undefined;
 
   const renderOptions = <T,>(
     options: Array<{ value: T; label: string; description: string }>,
@@ -217,6 +220,7 @@ const AutoOptWizard: React.FC<{
           <fieldset className="preset-intent-fieldset autoopt-wizard__fieldset" data-autoopt-step="model">
             <legend>{MODEL_STEP.legend}</legend>
             <p className="preset-help">{MODEL_STEP.help}</p>
+            <p className="preset-help" data-autoopt-model-note>{MODEL_STEP.note}</p>
             {models.length === 0 ? (
               <p className="preset-help" data-autoopt-no-models>{MODEL_STEP.empty}</p>
             ) : (
@@ -326,8 +330,8 @@ const AutoOptWizard: React.FC<{
               <dt>RAM headroom</dt><dd>{RAM_HEADROOM_LABELS[ramHeadroom]}</dd>
               {showVisionStep && <><dt>Vision</dt><dd>{useVision ? 'Image input kept' : 'Text only'}</dd></>}
               <dt>Budget</dt><dd>{BUDGET_LABELS[budget]}</dd>
-              <dt>Network</dt><dd>{allowNetwork ? 'May download backends' : 'Installed backends only'}</dd>
-              <dt>Unload models</dt><dd>{consentRequired ? (consent ? 'Allowed' : 'Not allowed') : 'Nothing loaded'}</dd>
+              <dt>Network</dt><dd>{allowNetwork ? 'Fetch model metadata from Hugging Face' : 'No network access'}</dd>
+              <dt>Unload models</dt><dd>{!benchmarkTier ? 'Not needed for Fast Scan' : (loadedModels.length === 0 ? 'Nothing loaded' : (consent ? 'Allowed' : 'Not allowed'))}</dd>
             </dl>
             {consentRequired && !consent && (
               <p className="preset-error" data-autoopt-consent-gate>Confirm the unload consent on the previous step to start.</p>
@@ -339,14 +343,12 @@ const AutoOptWizard: React.FC<{
         return (
           <div className="autoopt-wizard__running" data-autoopt-step="running">
             <h3>{activeRun && !isAutoOptRunActive(activeRun) ? 'Run finished' : 'Optimizing…'}</h3>
-            {activeRun?.progress && (
-              <p className="preset-help" data-autoopt-progress>
-                {activeRun.progress.stage} · step {activeRun.progress.stage_index + 1}/{activeRun.progress.stage_count}
-              </p>
+            {activeRun?.progress?.detail && (
+              <p className="preset-help" data-autoopt-progress>{activeRun.progress.detail}</p>
             )}
-            {activeDetail && activeDetail.stages.length > 0 && (
+            {activeRun && activeRun.stages.length > 0 && (
               <ul className="autoopt-stage-list" data-autoopt-stage-list>
-                {activeDetail.stages.map(stage => (
+                {activeRun.stages.map(stage => (
                   <li key={stage.name} className={`autoopt-stage autoopt-stage--${stage.status}`}>
                     <span className="autoopt-stage__marker" aria-hidden="true" />
                     <span className="autoopt-stage__name">{stage.name}</span>
@@ -402,10 +404,10 @@ const AutoOptWizard: React.FC<{
             <div className="slideover__foot">
               {step === 'running' ? (
                 <>
-                  {activeRun && isAutoOptRunActive(activeRun) && runId && !runId.startsWith('pending-') && (
+                  {activeRun && isAutoOptRunActive(activeRun) && runId && (
                     <button
                       className="btn btn--ghost"
-                      onClick={() => { void autoOptStore.cancelRun(runId).catch(() => {}); }}
+                      onClick={() => autoOptStore.cancelRun(runId)}
                       data-autoopt-cancel-run
                     >
                       Cancel run

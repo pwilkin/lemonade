@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { LoadedModel } from '../../api';
 import { autoOptStore, AutoOptState } from './autoOptStore';
-import { AutoOptRunSummary, isAutoOptRunActive } from './autoOptTypes';
+import { AutoOptRunRecord, isAutoOptRunActive } from './autoOptTypes';
 import AutoOptWizard from './AutoOptWizard';
 import AutoOptRunDetail from './AutoOptRunDetail';
 
@@ -11,7 +11,7 @@ export function openAutoOptRun(runId: string): void {
   window.dispatchEvent(new CustomEvent(AUTOOPT_OPEN_RUN_EVENT, { detail: { id: runId } }));
 }
 
-function runDate(run: AutoOptRunSummary): string {
+function runDate(run: AutoOptRunRecord): string {
   const raw = run.finished_at || run.created_at;
   const parsed = Date.parse(raw || '');
   if (!Number.isFinite(parsed) || parsed <= 0) return '';
@@ -22,7 +22,7 @@ function firstLine(text: string | undefined): string {
   return String(text || '').split('\n')[0].trim();
 }
 
-function statusChip(run: AutoOptRunSummary): React.ReactNode {
+function statusChip(run: AutoOptRunRecord): React.ReactNode {
   switch (run.status) {
     case 'queued':
       return <span className="autoopt-status-chip autoopt-status-chip--queued"><span className="autoopt-status-dot" aria-hidden="true" />Queued</span>;
@@ -59,7 +59,7 @@ const AutoOptRail: React.FC<{
   const [wizardOpen, setWizardOpen] = useState(false);
   const [detailRunId, setDetailRunId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState('');
-  const previousStatuses = useRef<Map<string, AutoOptRunSummary['status']>>(new Map());
+  const previousStatuses = useRef<Map<string, AutoOptRunRecord['status']>>(new Map());
 
   useEffect(() => autoOptStore.subscribe(setState), []);
 
@@ -92,6 +92,15 @@ const AutoOptRail: React.FC<{
     setDetailRunId(null);
   }, []);
 
+  const deleteRun = useCallback((runId: string) => {
+    const previousSelection = selectedRunId;
+    try {
+      autoOptStore.deleteRun(runId);
+    } catch {
+      setSelectedRunId(previousSelection);
+    }
+  }, [selectedRunId]);
+
   useEffect(() => {
     const onOpenRun = (event: Event) => {
       const id = String((event as CustomEvent).detail?.id || '');
@@ -118,16 +127,20 @@ const AutoOptRail: React.FC<{
             className="btn btn--primary btn--small"
             style={{ width: '100%', marginBottom: '0.75rem' }}
             onClick={() => setWizardOpen(true)}
+            disabled={state.unsupported}
             data-autoopt-run-optimizer
           >
             ▶ Run optimizer
           </button>
           <p className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-autoopt-announcement>{announcement}</p>
-          {state.lastError && (
+          {state.unsupported && (
+            <p className="context-rail__notice" data-autoopt-unsupported>This server does not support the llama.cpp tool endpoints — update lemond.</p>
+          )}
+          {state.lastError && !state.unsupported && (
             <p className="context-rail__notice preset-error" data-autoopt-rail-error>⚠ {state.lastError}</p>
           )}
           <div className="auto-run-list" data-autoopt-run-list>
-            {state.runs.length === 0 && (
+            {state.runs.length === 0 && !state.unsupported && (
               <p className="context-rail__hint" data-autoopt-empty>No optimization runs yet on this server.</p>
             )}
             {state.runs.map(run => {
@@ -149,8 +162,8 @@ const AutoOptRail: React.FC<{
                       <button
                         type="button"
                         className="btn btn--ghost btn--tiny"
-                        disabled={cancelling || run.id.startsWith('pending-')}
-                        onClick={() => void autoOptStore.cancelRun(run.id).catch(() => {})}
+                        disabled={cancelling}
+                        onClick={() => autoOptStore.cancelRun(run.id)}
                         aria-label={`Cancel AutoOpt run for ${run.model}`}
                         data-autoopt-cancel={run.id}
                       >
@@ -160,7 +173,7 @@ const AutoOptRail: React.FC<{
                       <button
                         type="button"
                         className="btn btn--ghost btn--tiny auto-run-card__delete-action"
-                        onClick={() => void autoOptStore.deleteRun(run.id).catch(() => {})}
+                        onClick={() => deleteRun(run.id)}
                         aria-label={`Delete AutoOpt run for ${run.model}`}
                         title="Delete this run"
                         data-autoopt-delete={run.id}

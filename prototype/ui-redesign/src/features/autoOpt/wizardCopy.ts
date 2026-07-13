@@ -5,8 +5,9 @@ export const WIZARD_INTRO = 'AutoOpt benchmarks this model on your hardware and 
 
 export const MODEL_STEP = {
   legend: 'Which model should be optimized?',
-  help: 'AutoOpt tunes one chat or omni model at a time. The result applies to this exact model on this machine.',
-  empty: 'No chat-capable models are available. Download a chat or omni model first.',
+  help: 'AutoOpt tunes one model at a time. The result applies to this exact model on this machine.',
+  note: 'AutoOpt currently supports downloaded llama.cpp models; it compares llama.cpp backend variants (Vulkan/ROCm/CUDA), not other engines.',
+  empty: 'No downloaded llama.cpp chat models are available. Download a llama.cpp chat or omni model first.',
 };
 
 export const PARALLEL_STEP = {
@@ -105,29 +106,29 @@ export const BUDGET_STEP = {
   options: [
     {
       value: 'quick' as AutoOptBudget,
-      label: 'Quick',
-      description: 'Roughly 2–5 minutes. Probes memory fit and a small benchmark grid. Good first pass.',
+      label: 'Fast Scan',
+      description: 'Heuristics plus memory-fit probes — no benchmarks. (~seconds)',
     },
     {
       value: 'standard' as AutoOptBudget,
-      label: 'Standard',
-      description: 'Roughly 10–20 minutes. Benchmarks the candidate backends and batch sizes that matter. Recommended.',
+      label: 'Benchmark',
+      description: 'Fit probes, a backend duel at depth 0, a batch ladder on unified-memory machines, an MTP sweep {2,3,4} where supported, and flag validation. (~2–6 min)',
     },
     {
       value: 'thorough' as AutoOptBudget,
-      label: 'Thorough',
-      description: 'Roughly 30–60 minutes. Full sweep across backends, batch ladders, and long-context depths for the most precise result.',
+      label: 'Deep Benchmark',
+      description: 'Adds deep-context depth points, measured KV-quant impact, full batch ladders, MTP {1..6}, and a real-load smoke test. (~15–45 min)',
     },
   ],
-  networkLabel: 'Allow downloading backends during optimization',
-  networkHelp: 'When enabled, AutoOpt may fetch additional inference backends to compare. Disable to only benchmark what is already installed.',
+  networkLabel: 'Allow fetching model metadata from Hugging Face',
+  networkHelp: "Only the base model's metadata and generation_config.json are fetched from Hugging Face. Nothing else is downloaded.",
   consentLabel: 'AutoOpt may unload the models currently loaded on this server while it benchmarks',
-  consentHelp: 'Benchmarking needs exclusive access to the hardware. Loaded models are evicted during the run and are not reloaded automatically.',
+  consentHelp: 'Benchmarking needs exclusive access to the hardware. Loaded models are evicted during the run and are not reloaded automatically. Fast Scan runs no benchmarks and never unloads anything.',
 };
 
 export const REVIEW_STEP = {
   legend: 'Review and start',
-  help: 'AutoOpt will benchmark with these answers. You can cancel the run at any time.',
+  help: 'AutoOpt will run with these answers. You can cancel the run at any time.',
 };
 
 export const RUNNING_STEP = {
@@ -149,7 +150,7 @@ export const RAM_HEADROOM_LABELS: Record<AutoOptRamHeadroom, string> = {
 };
 
 export const BUDGET_LABELS: Record<AutoOptBudget, string> = {
-  quick: 'Quick',
-  standard: 'Standard',
-  thorough: 'Thorough',
+  quick: 'Fast Scan',
+  standard: 'Benchmark',
+  thorough: 'Deep Benchmark',
 };

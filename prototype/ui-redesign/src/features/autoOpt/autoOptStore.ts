@@ -1,147 +1,87 @@
 import api from '../../api';
 import {
-  AutoOptBudget,
-  AutoOptRunDetail,
-  AutoOptRunStatus,
-  AutoOptRunSummary,
+  AutoOptUnsupportedError,
+  AUTOOPT_STAGES,
+  executeAutoOptRun,
+  probeToolEndpoints,
+} from './autoOptController';
+import {
+  AutoOptRunRecord,
   AutoOptStage,
-  AutoOptStageStatus,
   AutoOptStartRequest,
   isAutoOptRunActive,
 } from './autoOptTypes';
 
 export interface AutoOptState {
-  runs: AutoOptRunSummary[];
-  details: Record<string, AutoOptRunDetail>;
+  runs: AutoOptRunRecord[];
   activeRunId: string | null;
   lastError: string | null;
+  unsupported: boolean;
   pendingCancel: Set<string>;
 }
 
 type Listener = (state: AutoOptState) => void;
 
-const ACTIVE_POLL_MS = 1500;
-const IDLE_POLL_MS = 10000;
+const STORAGE_KEY = 'lemonade_autoopt_runs_v1';
+const MAX_RUNS = 20;
 
-const RUN_STATUSES: AutoOptRunStatus[] = ['queued', 'running', 'completed', 'failed', 'cancelled'];
-const STAGE_STATUSES: AutoOptStageStatus[] = ['pending', 'running', 'completed', 'failed', 'skipped'];
-const BUDGETS: AutoOptBudget[] = ['quick', 'standard', 'thorough'];
-
-function coerceStatus(value: unknown): AutoOptRunStatus {
-  const s = String(value || '').toLowerCase();
-  if (RUN_STATUSES.includes(s as AutoOptRunStatus)) return s as AutoOptRunStatus;
-  if (s === 'canceled' || s === 'cancelling' || s === 'canceling') return 'cancelled';
-  if (s === 'error' || s === 'failure') return 'failed';
-  if (s === 'complete' || s === 'success' || s === 'done') return 'completed';
-  if (s === 'pending') return 'queued';
-  return 'queued';
+function isoNow(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-function coerceStageStatus(value: unknown): AutoOptStageStatus {
-  const s = String(value || '').toLowerCase();
-  if (STAGE_STATUSES.includes(s as AutoOptStageStatus)) return s as AutoOptStageStatus;
-  if (s === 'error' || s === 'failure') return 'failed';
-  if (s === 'complete' || s === 'success' || s === 'done') return 'completed';
-  if (s === 'skip') return 'skipped';
-  return 'pending';
+function makeRunId(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}`
+    + `-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+  const suffix = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  return `ao-${stamp}-${suffix}`;
 }
 
-function coerceTimestamp(value: unknown): string | undefined {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-    const ms = value < 10_000_000_000 ? value * 1000 : value;
-    return new Date(ms).toISOString();
-  }
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Date.parse(value.trim());
-    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
-  }
-  return undefined;
+function freshStages(): AutoOptStage[] {
+  return AUTOOPT_STAGES.map(name => ({ name, status: 'pending' as const }));
 }
 
-export function runCreatedAtMs(run: Pick<AutoOptRunSummary, 'created_at'>): number {
-  const parsed = Date.parse(run.created_at || '');
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function optionalString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function optionalNumber(value: unknown): number | undefined {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-export function normalizeRunSummary(raw: unknown): AutoOptRunSummary | null {
+function coerceStoredRun(raw: unknown): AutoOptRunRecord | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const obj = raw as Record<string, unknown>;
-  const id = optionalString(obj.id);
-  if (!id) return null;
-  const progressRaw = obj.progress && typeof obj.progress === 'object' && !Array.isArray(obj.progress)
-    ? obj.progress as Record<string, unknown>
-    : null;
-  const budget = String(obj.budget || '').toLowerCase();
-  return {
-    id,
-    model: optionalString(obj.model) || '',
-    status: coerceStatus(obj.status),
-    budget: BUDGETS.includes(budget as AutoOptBudget) ? budget as AutoOptBudget : 'standard',
-    created_at: coerceTimestamp(obj.created_at) || new Date(0).toISOString(),
-    finished_at: coerceTimestamp(obj.finished_at),
-    summary: optionalString(obj.summary),
-    error: optionalString(obj.error),
-    lemonade_version: optionalString(obj.lemonade_version),
-    progress: progressRaw ? {
-      stage: optionalString(progressRaw.stage) || '',
-      stage_index: optionalNumber(progressRaw.stage_index) ?? 0,
-      stage_count: optionalNumber(progressRaw.stage_count) ?? 0,
-      percent: optionalNumber(progressRaw.percent),
-      detail: optionalString(progressRaw.detail),
-      eta_seconds: optionalNumber(progressRaw.eta_seconds),
-    } : undefined,
+  const run = raw as AutoOptRunRecord;
+  if (!run.id || typeof run.id !== 'string') return null;
+  const coerced: AutoOptRunRecord = {
+    ...run,
+    stages: Array.isArray(run.stages) ? run.stages : [],
+    measurements: {
+      fit: Array.isArray(run.measurements?.fit) ? run.measurements.fit : [],
+      bench: Array.isArray(run.measurements?.bench) ? run.measurements.bench : [],
+    },
   };
+  delete coerced.progress;
+  if (isAutoOptRunActive(coerced)) {
+    coerced.status = 'failed';
+    coerced.error = 'interrupted — the page was closed while the run was active';
+    coerced.finished_at = coerced.finished_at || isoNow();
+  }
+  return coerced;
 }
 
-export function normalizeRunDetail(raw: unknown): AutoOptRunDetail | null {
-  const summary = normalizeRunSummary(raw);
-  if (!summary) return null;
-  const obj = raw as Record<string, unknown>;
-  const stagesRaw = Array.isArray(obj.stages) ? obj.stages : [];
-  const stages: AutoOptStage[] = stagesRaw
-    .filter((stage): stage is Record<string, unknown> => !!stage && typeof stage === 'object' && !Array.isArray(stage))
-    .map(stage => ({
-      name: optionalString(stage.name) || '',
-      status: coerceStageStatus(stage.status),
-      duration_ms: optionalNumber(stage.duration_ms),
-      error: optionalString(stage.error),
-      data: stage.data && typeof stage.data === 'object' && !Array.isArray(stage.data)
-        ? stage.data as Record<string, unknown>
-        : undefined,
-    }))
-    .filter(stage => stage.name);
-  const measurementsRaw = obj.measurements && typeof obj.measurements === 'object' && !Array.isArray(obj.measurements)
-    ? obj.measurements as Record<string, unknown>
-    : null;
-  return {
-    ...summary,
-    answers: obj.answers && typeof obj.answers === 'object' && !Array.isArray(obj.answers)
-      ? obj.answers as AutoOptRunDetail['answers']
-      : undefined,
-    stages,
-    measurements: measurementsRaw ? {
-      fit: Array.isArray(measurementsRaw.fit) ? measurementsRaw.fit as Array<Record<string, unknown>> : [],
-      bench: Array.isArray(measurementsRaw.bench) ? measurementsRaw.bench as Array<Record<string, unknown>> : [],
-    } : undefined,
-    result: obj.result && typeof obj.result === 'object' && !Array.isArray(obj.result)
-      ? obj.result as AutoOptRunDetail['result']
-      : undefined,
-  };
+function readStoredRuns(): AutoOptRunRecord[] {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const items = Array.isArray(parsed?.runs) ? parsed.runs : [];
+    return items
+      .map(coerceStoredRun)
+      .filter((run: AutoOptRunRecord | null): run is AutoOptRunRecord => !!run)
+      .slice(0, MAX_RUNS);
+  } catch {
+    return [];
+  }
 }
 
-function sortRuns(runs: AutoOptRunSummary[]): AutoOptRunSummary[] {
-  return [...runs].sort((a, b) => runCreatedAtMs(b) - runCreatedAtMs(a));
+function writeStoredRuns(runs: AutoOptRunRecord[]): void {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, runs: runs.slice(0, MAX_RUNS) }));
 }
 
 function errorMessage(err: unknown): string {
@@ -149,27 +89,39 @@ function errorMessage(err: unknown): string {
   return String(err || 'Unknown error');
 }
 
+function runProgress(run: AutoOptRunRecord, detail: string | undefined): AutoOptRunRecord['progress'] {
+  let completed = 0;
+  let current = '';
+  for (const stage of run.stages) {
+    if (stage.status === 'completed' || stage.status === 'skipped') completed++;
+    if (stage.status === 'running') current = stage.name;
+  }
+  return {
+    stage: current || (run.stages.length ? run.stages[run.stages.length - 1].name : ''),
+    stage_index: completed,
+    stage_count: run.stages.length,
+    ...(detail ? { detail } : {}),
+  };
+}
+
 class AutoOptStore {
   private state: AutoOptState = {
-    runs: [],
-    details: {},
+    runs: readStoredRuns(),
     activeRunId: null,
     lastError: null,
+    unsupported: false,
     pendingCancel: new Set(),
   };
   private listeners = new Set<Listener>();
-  private pollTimer: ReturnType<typeof setTimeout> | null = null;
-  private refreshInFlight: Promise<void> | null = null;
-  private started = false;
+  private controllers = new Map<string, AbortController>();
+  private progressDetail = new Map<string, string>();
+  private probed = false;
 
   constructor() {
-    if (typeof window !== 'undefined') {
-      window.addEventListener('focus', () => { if (this.started) void this.refresh(); });
-      window.addEventListener('online', () => { if (this.started) void this.refresh(); });
-    }
     api.onStatusChange(status => {
-      if (this.started && status === 'connected') void this.refresh();
+      if (status === 'connected') void this.probeSupport();
     });
+    if (api.isConnected) void this.probeSupport();
   }
 
   snapshot(): AutoOptState {
@@ -179,139 +131,150 @@ class AutoOptStore {
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     listener(this.state);
-    this.start();
+    if (api.isConnected) void this.probeSupport();
     return () => {
       this.listeners.delete(listener);
-      if (this.listeners.size === 0) this.stop();
     };
   }
 
-  private start(): void {
-    if (this.started) return;
-    this.started = true;
-    void this.refresh();
-  }
-
-  private stop(): void {
-    this.started = false;
-    if (this.pollTimer) {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = null;
-    }
+  async probeSupport(): Promise<void> {
+    if (this.probed) return;
+    this.probed = true;
+    const supported = await probeToolEndpoints();
+    if (!supported) this.setState({ unsupported: true });
   }
 
   setActiveRun(id: string | null): void {
     if (this.state.activeRunId === id) return;
     this.setState({ activeRunId: id });
-    if (id && !id.startsWith('pending-')) void this.refreshDetail(id);
-  }
-
-  async refresh(): Promise<void> {
-    if (this.refreshInFlight) return this.refreshInFlight;
-    this.refreshInFlight = (async () => {
-      if (!api.isConnected) {
-        this.scheduleNext();
-        return;
-      }
-      try {
-        const serverRuns = (await api.autoOptRuns())
-          .map(normalizeRunSummary)
-          .filter((run): run is AutoOptRunSummary => !!run);
-        const pending = this.state.runs.filter(run => run.id.startsWith('pending-'));
-        this.setState({ runs: sortRuns([...pending, ...serverRuns]), lastError: null });
-        const activeId = this.state.activeRunId;
-        if (activeId && !activeId.startsWith('pending-')) {
-          const active = serverRuns.find(run => run.id === activeId);
-          if (active && (isAutoOptRunActive(active) || !this.state.details[activeId])) {
-            await this.refreshDetail(activeId);
-          }
-        }
-      } catch (err) {
-        this.setState({ lastError: errorMessage(err) });
-      } finally {
-        this.scheduleNext();
-      }
-    })();
-    try {
-      await this.refreshInFlight;
-    } finally {
-      this.refreshInFlight = null;
-    }
-  }
-
-  async refreshDetail(id: string): Promise<AutoOptRunDetail | null> {
-    try {
-      const detail = normalizeRunDetail(await api.autoOptRun(id));
-      if (!detail) return null;
-      this.setState({ details: { ...this.state.details, [id]: detail } });
-      return detail;
-    } catch (err) {
-      this.setState({ lastError: errorMessage(err) });
-      return null;
-    }
   }
 
   async startRun(request: AutoOptStartRequest): Promise<string> {
-    const syntheticId = `pending-${Date.now()}`;
-    const synthetic: AutoOptRunSummary = {
-      id: syntheticId,
+    if (this.state.runs.some(isAutoOptRunActive)) {
+      throw new Error('an AutoOpt run is already active');
+    }
+    const modelInfo = api.allModels.find(model =>
+      String((model as Record<string, unknown>).model_name || model.name || model.id || '').trim() === request.model);
+    const run: AutoOptRunRecord = {
+      id: makeRunId(),
       model: request.model,
-      status: 'queued',
+      checkpoint: String((modelInfo as Record<string, unknown> | undefined)?.checkpoint || ''),
       budget: request.budget,
-      created_at: new Date().toISOString(),
+      answers: request.answers,
+      allow_unload: request.allow_unload,
+      status: 'running',
+      created_at: isoNow(),
+      lemonade_version: api.healthData?.version,
+      stages: freshStages(),
+      measurements: { fit: [], bench: [] },
     };
-    this.setState({ runs: sortRuns([synthetic, ...this.state.runs]), lastError: null });
+    run.progress = runProgress(run, undefined);
+    this.setState({ runs: [run, ...this.state.runs].slice(0, MAX_RUNS), lastError: null });
     try {
-      const { id } = await api.autoOptStart(request);
-      this.setState({
-        runs: sortRuns(this.state.runs.map(run => run.id === syntheticId ? { ...run, id } : run)),
-        activeRunId: this.state.activeRunId === syntheticId ? id : this.state.activeRunId,
+      this.persist();
+    } catch {}
+
+    const controller = new AbortController();
+    this.controllers.set(run.id, controller);
+    void this.execute(run.id, request, controller);
+    return run.id;
+  }
+
+  private async execute(runId: string, request: AutoOptStartRequest, controller: AbortController): Promise<void> {
+    const callbacks = {
+      stage: (name: string, status: AutoOptStage['status'], patch?: Partial<AutoOptStage>) => {
+        this.updateRun(runId, run => {
+          const stages = run.stages.some(stage => stage.name === name)
+            ? run.stages.map(stage => stage.name === name
+              ? { ...stage, ...patch, status, ...(patch?.data ? { data: { ...(stage.data || {}), ...patch.data } } : {}) }
+              : stage)
+            : [...run.stages, { name, status, ...patch }];
+          const next = { ...run, stages };
+          next.progress = runProgress(next, this.progressDetail.get(runId));
+          return next;
+        });
+      },
+      progress: (detail: string) => {
+        this.progressDetail.set(runId, detail);
+        this.updateRun(runId, run => ({ ...run, progress: runProgress(run, detail) }), false);
+      },
+      fit: (estimate: AutoOptRunRecord['measurements']['fit'][number]) => {
+        this.updateRun(runId, run => ({
+          ...run,
+          measurements: { ...run.measurements, fit: [...run.measurements.fit, estimate] },
+        }));
+      },
+      bench: (points: AutoOptRunRecord['measurements']['bench']) => {
+        this.updateRun(runId, run => ({
+          ...run,
+          measurements: { ...run.measurements, bench: [...run.measurements.bench, ...points] },
+        }));
+      },
+    };
+
+    try {
+      const outcome = await executeAutoOptRun(request, controller.signal, callbacks);
+      this.updateRun(runId, run => {
+        const next: AutoOptRunRecord = {
+          ...run,
+          status: controller.signal.aborted ? 'cancelled' : 'completed',
+          finished_at: isoNow(),
+          summary: outcome.summary,
+          result: outcome.result,
+        };
+        delete next.progress;
+        return next;
       });
-      void this.refresh();
-      return id;
     } catch (err) {
-      this.setState({
-        runs: this.state.runs.filter(run => run.id !== syntheticId),
-        lastError: errorMessage(err),
+      const cancelled = controller.signal.aborted || (err as { name?: string } | null)?.name === 'AbortError';
+      if (err instanceof AutoOptUnsupportedError) this.setState({ unsupported: true });
+      this.updateRun(runId, run => {
+        const next: AutoOptRunRecord = {
+          ...run,
+          status: cancelled ? 'cancelled' : 'failed',
+          error: cancelled ? 'cancelled by user' : errorMessage(err),
+          finished_at: isoNow(),
+        };
+        delete next.progress;
+        return next;
       });
-      throw err;
+    } finally {
+      this.controllers.delete(runId);
+      this.progressDetail.delete(runId);
+      const pendingCancel = new Set(this.state.pendingCancel);
+      if (pendingCancel.delete(runId)) this.setState({ pendingCancel });
     }
   }
 
-  async cancelRun(id: string): Promise<void> {
-    const previousRuns = this.state.runs;
+  cancelRun(id: string): void {
+    const controller = this.controllers.get(id);
+    if (!controller) return;
     const pendingCancel = new Set(this.state.pendingCancel);
     pendingCancel.add(id);
-    this.setState({
-      runs: this.state.runs.map(run => run.id === id ? { ...run, status: 'cancelled' } : run),
-      pendingCancel,
-    });
-    try {
-      await api.autoOptCancel(id);
-      void this.refresh();
-    } catch (err) {
-      this.setState({ runs: previousRuns, lastError: errorMessage(err) });
-      throw err;
-    } finally {
-      const next = new Set(this.state.pendingCancel);
-      next.delete(id);
-      this.setState({ pendingCancel: next });
-    }
+    this.setState({ pendingCancel });
+    controller.abort();
   }
 
-  async deleteRun(id: string): Promise<void> {
+  deleteRun(id: string): void {
+    const run = this.state.runs.find(candidate => candidate.id === id);
+    if (!run) return;
+    if (isAutoOptRunActive(run)) {
+      throw new Error('run is still active — cancel it before deleting');
+    }
     const previousRuns = this.state.runs;
-    const details = { ...this.state.details };
-    delete details[id];
+    const previousActiveRunId = this.state.activeRunId;
     this.setState({
-      runs: this.state.runs.filter(run => run.id !== id),
-      details,
+      runs: this.state.runs.filter(candidate => candidate.id !== id),
       activeRunId: this.state.activeRunId === id ? null : this.state.activeRunId,
     });
     try {
-      await api.autoOptDelete(id);
+      this.persist();
     } catch (err) {
-      this.setState({ runs: previousRuns, lastError: errorMessage(err) });
+      this.setState({
+        runs: previousRuns,
+        activeRunId: previousActiveRunId,
+        lastError: errorMessage(err),
+      });
       throw err;
     }
   }
@@ -320,19 +283,26 @@ class AutoOptStore {
     if (this.state.lastError) this.setState({ lastError: null });
   }
 
+  private updateRun(id: string, updater: (run: AutoOptRunRecord) => AutoOptRunRecord, persist = true): void {
+    const runs = this.state.runs.map(run => run.id === id ? updater(run) : run);
+    this.setState({ runs });
+    if (persist) {
+      try {
+        this.persist();
+      } catch {
+        // Quota errors on incremental writes must not kill the run; terminal
+        // states retry on the next mutation.
+      }
+    }
+  }
+
+  private persist(): void {
+    writeStoredRuns(this.state.runs);
+  }
+
   private setState(patch: Partial<AutoOptState>): void {
     this.state = { ...this.state, ...patch };
     this.listeners.forEach(listener => listener(this.state));
-  }
-
-  private scheduleNext(): void {
-    if (!this.started) return;
-    if (this.pollTimer) clearTimeout(this.pollTimer);
-    const activeRun = this.state.activeRunId
-      ? this.state.runs.find(run => run.id === this.state.activeRunId)
-      : undefined;
-    const busy = this.state.runs.some(isAutoOptRunActive) || (activeRun && isAutoOptRunActive(activeRun));
-    this.pollTimer = setTimeout(() => void this.refresh(), busy ? ACTIVE_POLL_MS : IDLE_POLL_MS);
   }
 }
 

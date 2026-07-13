@@ -16,7 +16,7 @@ import {
   type SamplingParams,
   type TemperatureHint,
 } from '../../presetStore';
-import type { AutoOptRecommendation, AutoOptRunDetail, AutoOptSamplingDefaults } from './autoOptTypes';
+import type { AutoOptRecommendation, AutoOptRunRecord, SamplingDefaults } from './autoOptTypes';
 
 function modelShortName(model: string): string {
   const parts = model.split('/').filter(Boolean);
@@ -32,14 +32,14 @@ function nearestTemperatureHint(value: number | undefined): TemperatureHint {
 
 function recommendationRecipeOptions(rec: AutoOptRecommendation): RecipeOptions {
   const options: RecipeOptions = {};
-  if (rec.ctx_size !== undefined) options.ctx_size = rec.ctx_size;
+  if (rec.ctx_size > 0) options.ctx_size = rec.ctx_size;
   if (rec.llamacpp_backend) options.llamacpp_backend = rec.llamacpp_backend;
   if (rec.llamacpp_args) options.llamacpp_args = rec.llamacpp_args;
-  if (rec.mmproj_enabled !== undefined) options.mmproj_enabled = rec.mmproj_enabled;
+  if (rec.mmproj_enabled === false) options.mmproj_enabled = false;
   return options;
 }
 
-function samplingFromDefaults(defaults: AutoOptSamplingDefaults | undefined): SamplingParams {
+function samplingFromDefaults(defaults: SamplingDefaults | undefined): SamplingParams {
   if (!defaults) return {};
   const sampling: SamplingParams = {};
   if (defaults.temperature !== undefined) sampling.temperature = defaults.temperature;
@@ -50,7 +50,7 @@ function samplingFromDefaults(defaults: AutoOptSamplingDefaults | undefined): Sa
 }
 
 export function createPresetFromRun(
-  run: AutoOptRunDetail,
+  run: AutoOptRunRecord,
   rec: AutoOptRecommendation,
   modelInfo: ModelInfo | null | undefined,
 ): Preset {
@@ -61,7 +61,7 @@ export function createPresetFromRun(
     description: rec.rationale?.[0] || run.summary || '',
     applies_to: modelInfo ? labelsFor(modelInfo) : ['chat'],
     temperature_hint: nearestTemperatureHint(samplingDefaults?.temperature),
-    context_hint: rec.ctx_size !== undefined
+    context_hint: rec.ctx_size > 0
       ? contextHintFromValue(rec.ctx_size, modelContextSize(modelInfo))
       : 'medium',
     thinking_mode: 'normal',
@@ -83,7 +83,7 @@ export function createPresetFromRun(
 }
 
 export async function applyRunNow(
-  run: AutoOptRunDetail,
+  run: AutoOptRunRecord,
   rec: AutoOptRecommendation,
   { save }: { save: boolean },
 ): Promise<void> {
