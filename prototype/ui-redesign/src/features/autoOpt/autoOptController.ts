@@ -483,14 +483,10 @@ export async function executeAutoOptRun(
 }
 
 /**
- * Distinguishes "endpoints missing" (404) from every other reply. A server
- * with the tool endpoints answers the empty probe body with 400.
+ * lemond advertises the fit-params/bench endpoints as the "llamacpp-tools"
+ * feature in /health — no probe request needed. Real queries' 404s still
+ * soft-set unsupported as a fallback for servers that predate the flag.
  */
-export async function probeToolEndpoints(): Promise<boolean> {
-  try {
-    await api.llamacppFitParams({ model: '', backend: '' });
-    return true;
-  } catch (err) {
-    return !isNotFound(err);
-  }
+export function serverSupportsLlamacppTools(health: { features?: string[] } | null | undefined): boolean {
+  return Array.isArray(health?.features) && health!.features!.includes('llamacpp-tools');
 }

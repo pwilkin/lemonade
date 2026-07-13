@@ -103,6 +103,7 @@ function normalizeHealth(data: unknown): HealthData {
     websocket_port: Number(obj.websocket_port || 0),
     all_models_loaded: loaded,
     max_models: isObject(obj.max_models) ? obj.max_models as Record<string, number> : {},
+    features: Array.isArray(obj.features) ? obj.features.map(String) : [],
   };
 }
 
@@ -138,6 +139,7 @@ export interface HealthData {
   websocket_port: number;
   all_models_loaded: LoadedModel[];
   max_models: Record<string, number>;
+  features: string[];
 }
 
 export interface LoadedModel {

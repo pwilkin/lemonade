@@ -113,7 +113,7 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
   const loaded = options.loadedModels || [];
 
   await page.route('**/api/v1/health**', route => route.fulfill({
-    json: { status: 'ok', version: 'test', all_models_loaded: loaded },
+    json: { status: 'ok', version: 'test', all_models_loaded: loaded, features: ['llamacpp-tools'] },
   }));
   await page.route('**/api/v1/models**', route => route.fulfill({ json: { data: MODELS } }));
   await page.route('**/api/v1/models/*', route => {
@@ -134,9 +134,6 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
 
   await page.route('**/api/v1/backends/llamacpp/fit-params', async route => {
     const body = route.request().postDataJSON() as Record<string, unknown>;
-    if (!body?.model || !body?.backend) {
-      return route.fulfill({ status: 400, json: { error: "'model' and 'backend' are required" } });
-    }
     counts.fit.push(body);
     if (options.fitHandler) return options.fitHandler(route, body, counts);
     const extraArgs = Array.isArray(body.args) ? (body.args as string[]).join(' ') : String(body.args || '');
@@ -511,19 +508,28 @@ test.describe('AutoOpt wizard + controller', () => {
     await expect(page.locator('.autoopt-stage--failed .autoopt-stage__name')).toContainText('model_facts');
   });
 
-  test('a server without the tool endpoints shows the unsupported notice', async ({ page }) => {
+  test('a server whose /health lacks the llamacpp-tools feature shows the unsupported notice', async ({ page }) => {
     await page.route('**/api/v1/health**', route => route.fulfill({
       json: { status: 'ok', version: 'test', all_models_loaded: [] },
     }));
     await page.route('**/api/v1/models**', route => route.fulfill({ json: { data: MODELS } }));
     await page.route('**/api/v1/system-info**', route => route.fulfill({ json: SYSTEM_INFO }));
-    await page.route('**/api/v1/backends/llamacpp/**', route => route.fulfill({ status: 404, body: 'Not Found' }));
 
     await openPresets(page);
     const notice = page.locator('[data-autoopt-unsupported]');
     await expect(notice).toBeVisible({ timeout: 10000 });
     await expect(notice).toContainText('does not support the llama.cpp tool endpoints');
     await expect(page.locator('[data-autoopt-run-optimizer]')).toBeDisabled();
+  });
+
+  test('the capability check fires no probe requests against the tool endpoints', async ({ page }) => {
+    const counts = await mockServer(page);
+    await openPresets(page);
+    await expect(page.locator('[data-autoopt-run-optimizer]')).toBeEnabled();
+    await expect(page.locator('[data-autoopt-unsupported]')).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(counts.fit).toHaveLength(0);
+    expect(counts.bench).toHaveLength(0);
   });
 });
 

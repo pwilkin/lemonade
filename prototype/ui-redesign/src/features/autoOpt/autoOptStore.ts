@@ -3,7 +3,7 @@ import {
   AutoOptUnsupportedError,
   AUTOOPT_STAGES,
   executeAutoOptRun,
-  probeToolEndpoints,
+  serverSupportsLlamacppTools,
 } from './autoOptController';
 import {
   AutoOptRunRecord,
@@ -140,8 +140,13 @@ class AutoOptStore {
   async probeSupport(): Promise<void> {
     if (this.probed) return;
     this.probed = true;
-    const supported = await probeToolEndpoints();
-    if (!supported) this.setState({ unsupported: true });
+    try {
+      const health = api.healthData || await api.health();
+      const supported = serverSupportsLlamacppTools(health);
+      if (supported === this.state.unsupported) this.setState({ unsupported: !supported });
+    } catch {
+      this.probed = false;
+    }
   }
 
   setActiveRun(id: string | null): void {
