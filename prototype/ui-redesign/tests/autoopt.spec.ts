@@ -718,6 +718,24 @@ test.describe('AutoOpt run detail actions', () => {
     expect(counts.load[0].llamacpp_backend).toBe('cpu');
   });
 
+  test('a created preset is discoverable: sorted first, flashed, and named after its model', async ({ page }) => {
+    await openCompletedRunDetail(page);
+    await page.locator('[data-autoopt-create-preset]').click();
+    await expect(page.locator('[data-autoopt-detail-notice]')).toContainText('Created preset');
+    await page.locator('[data-autoopt-detail] .slideover__close').click();
+
+    // "Your presets" renders above the bundled starters.
+    const zoneTitles = await page.locator('.recipes__body .zone__title').allTextContents();
+    expect(zoneTitles.indexOf('Your presets')).toBeGreaterThanOrEqual(0);
+    expect(zoneTitles.indexOf('Your presets')).toBeLessThan(zoneTitles.indexOf('Bundled starters'));
+
+    // The new card is flash-highlighted and names the model it optimizes.
+    const card = page.locator('[data-recipe-grid="yours"] .recipe-card').first();
+    await expect(card).toBeVisible();
+    await expect(card).toHaveClass(/recipe-card--flash/);
+    await expect(card.locator('[data-preset-linked-models]')).toContainText(`Optimized for ${CHAT_MODEL}`);
+  });
+
   test('preset editor links back to the producing run via the AutoOpt chip', async ({ page }) => {
     await openCompletedRunDetail(page);
     await page.locator('[data-autoopt-create-preset]').click();
@@ -729,6 +747,7 @@ test.describe('AutoOpt run detail actions', () => {
     await yourCards.first().locator('.recipe-card__overlay-btn').click();
     await page.waitForSelector('.slideover.is-open');
 
+    await expect(page.locator('[data-preset-editor-linked]')).toContainText(`Optimized for ${CHAT_MODEL}`);
     await expect(page.locator('[data-preset-autoopt-chip]')).toBeVisible();
     await page.locator('[data-preset-autoopt-chip]').click();
     await expect(page.locator('[data-autoopt-detail]')).toBeVisible();

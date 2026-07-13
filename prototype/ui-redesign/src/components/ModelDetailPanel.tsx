@@ -1404,7 +1404,7 @@ const ModelTuningTab: React.FC<{
         </div>
         <div className="detail-tuning__summary-card">
           <span className="detail-tuning__summary-label">Pair source</span>
-          <strong>{hasUserTuning ? 'Custom tuning' : 'Resolved defaults'}</strong>
+          <strong>{resolvedTuning.tuning.source === 'optimized' ? 'AutoOpt optimized' : (hasUserTuning ? 'Custom tuning' : 'Resolved defaults')}</strong>
         </div>
       </section>
 
@@ -1418,7 +1418,12 @@ const ModelTuningTab: React.FC<{
               <div className="detail-tuning__kv" key={`ro-${key}`}>
                 <span>{TUNING_FIELD_LABELS[key as keyof RecipeOptions] || key}</span>
                 <code>{tuningValue(value)}</code>
-                <small>{tuningSourceLabel(resolvedTuning.sources.recipe_options[key as keyof RecipeOptions])}</small>
+                <small>
+                  {key === 'ctx_size' && selectedPreset.context_hint === 'max'
+                    && resolvedTuning.sources.recipe_options.ctx_size === 'generic'
+                    ? 'Model maximum'
+                    : tuningSourceLabel(resolvedTuning.sources.recipe_options[key as keyof RecipeOptions])}
+                </small>
               </div>
             ))}
             {effectiveSamplingEntries.map(([key, value]) => (

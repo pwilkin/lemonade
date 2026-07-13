@@ -4238,6 +4238,51 @@ input, textarea {
   border-color: var(--accent-fg);
 }
 
+.recipe-card__linked,
+.preset-linked-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  align-self: flex-start;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-linked-note {
+  padding: 2px var(--space-2);
+}
+
+.recipe-card__linked--optimized,
+.preset-linked-note--optimized {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.recipe-card--flash {
+  animation: autoopt-card-flash 1.2s ease-out 3;
+}
+
+@keyframes autoopt-card-flash {
+  0% {
+    border-color: var(--accent-fg);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  100% {
+    border-color: var(--border-subtle);
+    box-shadow: none;
+  }
+}
+
 .cell--selectable {
   position: relative; /* needed for overlay select button */
   cursor: pointer;

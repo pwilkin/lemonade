@@ -129,6 +129,49 @@ function installBrowserStorageShim() {
     assert.equal(loadOptions.ctx_size, 8192, 'optimized ctx_size must flow into load options');
     assert.equal(loadOptions.llamacpp_args, '-b 512');
 
+    // createPresetFromRun path: a recommended ctx BELOW the model maximum
+    // (e.g. clamped to 65536 on a 262144 model) maps to an editable hint and
+    // resolves the optimizer's exact ctx with source 'optimized'.
+    storage.clear();
+    const bigModel = {
+      id: 'big-model',
+      name: 'big-model',
+      labels: ['llm'],
+      recipe: 'llamacpp',
+      ctx_size: 4096,
+      max_context_window: 262144,
+      downloaded: true,
+    };
+    const hint = presets.contextHintFromValue(65536, presets.modelContextSize(bigModel));
+    assert.equal(hint, 'medium', 'a below-max optimized ctx must map to an editable hint');
+    const aoPreset = presets.sanitizePreset({
+      id: 'u-autoopt-ctx',
+      name: 'AutoOpt · big-model',
+      description: '',
+      applies_to: ['chat'],
+      temperature_hint: 'balanced',
+      context_hint: hint,
+      thinking_mode: 'normal',
+      recipe_options: {},
+      sampling: {},
+      engine_hint: 'llamacpp',
+      starter: false,
+      auto_opt_run_id: 'run-ctx',
+      auto_opt_enabled: true,
+    });
+    presets.saveUserPresets([aoPreset]);
+    presets.saveApplied({ 'big-model': aoPreset.id });
+    presets.saveOptimizedModelTuning('big-model', {
+      recipe_options: { ctx_size: 65536, llamacpp_backend: 'vulkan', llamacpp_args: '-b 2048 -ub 2048' },
+      sampling: {},
+    }, aoPreset.id, 'run-ctx');
+    const resolvedBig = presets.resolvedModelTuningForPreset('big-model', bigModel, aoPreset);
+    assert.equal(resolvedBig.tuning.recipe_options.ctx_size, 65536,
+      'the optimizer ctx must survive intent migration exactly');
+    assert.equal(resolvedBig.sources.recipe_options.ctx_size, 'optimized');
+    assert.equal(resolvedBig.tuning.source, 'optimized');
+    assert.equal(presets.recipeOptionsForModel('big-model', bigModel).ctx_size, 65536);
+
     console.log('AutoOpt glue runtime tests passed.');
   } finally {
     fs.rmSync(outputPath, { recursive: true, force: true });
