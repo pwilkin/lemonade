@@ -1,7 +1,7 @@
 import type { AutoOptBudget, AutoOptKvCacheQuant, AutoOptParallelMode, AutoOptRamHeadroom } from './autoOptTypes';
 
 export const WIZARD_TITLE = 'Optimize this model';
-export const WIZARD_INTRO = 'AutoOpt benchmarks this model on your hardware and recommends the fastest safe configuration. Answer a few questions so it optimizes for how you actually use it.';
+export const WIZARD_INTRO = 'AutoOpt benchmarks this model on your hardware — right here in your browser, coordinating loads and short completions on the server — and recommends the fastest safe configuration. Answer a few questions so it optimizes for how you actually use it.';
 
 export const MODEL_STEP = {
   legend: 'Which model should be optimized?',
@@ -92,46 +92,29 @@ export const RAM_STEP = {
   ],
 };
 
-export const VISION_STEP = {
-  legend: 'Will you send images to this model?',
-  help: 'The vision projector (mmproj) keeps image input working but permanently occupies memory that could otherwise hold context.',
-  options: [
-    {
-      value: true,
-      label: 'Yes, I use image input',
-      description: 'Keep the vision projector loaded. Some memory is reserved for it at all times.',
-    },
-    {
-      value: false,
-      label: 'No, text only',
-      description: "Skip the projector and give its memory to the context window. You can turn it back on later in Model Tuning.",
-    },
-  ],
-};
-
 export const BUDGET_STEP = {
   legend: 'How thorough should the optimization be?',
   options: [
     {
       value: 'quick' as AutoOptBudget,
       label: 'Fast Scan',
-      description: 'Heuristics plus memory-fit probes — no benchmarks. (~seconds)',
+      description: 'Heuristic memory fit only — no loads, no benchmarks. The recommendation is not load-validated. (~seconds)',
     },
     {
       value: 'standard' as AutoOptBudget,
       label: 'Benchmark',
-      description: 'Fit probes, a backend duel at depth 0 and at deep context (~30k tokens), a batch ladder on unified-memory machines, an MTP sweep {2,3,4} where supported, and flag validation. (~5–15 min)',
+      description: 'Loads and times each candidate: a backend duel at depth 0 and at deep context (~30k tokens), a batch ladder on unified-memory machines, an MTP sweep {2,3,4} where supported, and a final load test of the recommendation. (~5–15 min)',
     },
     {
       value: 'thorough' as AutoOptBudget,
       label: 'Deep Benchmark',
-      description: 'Adds measured KV-quant impact, full batch ladders, MTP {1..6}, and a real-load smoke test. (~15–45 min)',
+      description: 'The same measurements with full batch ladders {512…8192} and a wider MTP sweep {1…6}. (~15–45 min)',
     },
   ],
   networkLabel: 'Allow fetching model metadata from Hugging Face',
   networkHelp: "Only the base model's metadata and generation_config.json are fetched from Hugging Face. Nothing else is downloaded.",
   consentLabel: 'AutoOpt may unload the models currently loaded on this server while it benchmarks',
-  consentHelp: 'Benchmarking needs exclusive access to the hardware. Loaded models are evicted during the run and are not reloaded automatically. Fast Scan runs no benchmarks and never unloads anything.',
+  consentHelp: 'Benchmarking needs exclusive access to the hardware: it repeatedly unloads and reloads the model to clear the prompt cache between timed runs. Loaded models are evicted during the run and are not reloaded automatically. Fast Scan runs no benchmarks and never unloads anything.',
 };
 
 export const REVIEW_STEP = {

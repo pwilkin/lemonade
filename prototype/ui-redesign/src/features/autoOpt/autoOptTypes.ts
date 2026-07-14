@@ -15,7 +15,6 @@ export interface AutoOptAnswers {
   parallel: AutoOptParallelAnswer;
   kv_cache_quant: AutoOptKvCacheQuant;
   ram_headroom: AutoOptRamHeadroom;
-  use_vision?: boolean;
   allow_network: boolean;
   backends_to_consider?: string[];
 }
@@ -27,14 +26,13 @@ export interface AutoOptStartRequest {
   answers: AutoOptAnswers;
 }
 
-/** Flat answer shape consumed by the synthesis engine (C++ WizardAnswers). */
+/** Flat answer shape consumed by the synthesis engine. */
 export interface WizardAnswers {
   parallel: boolean;
   slots: number;
   dedicated_slots: boolean;
   kv_cache_quant: AutoOptKvCacheQuant;
   ram_headroom: AutoOptRamHeadroom;
-  use_vision?: boolean;
   allow_network: boolean;
   backends_to_consider: string[];
 }
@@ -47,7 +45,6 @@ export function wizardAnswersFrom(answers: AutoOptAnswers): WizardAnswers {
     dedicated_slots: answers.parallel?.dedicated ?? true,
     kv_cache_quant: answers.kv_cache_quant || 'none',
     ram_headroom: answers.ram_headroom || 'normal',
-    use_vision: answers.use_vision,
     allow_network: answers.allow_network !== false,
     backends_to_consider: answers.backends_to_consider || [],
   };
@@ -92,51 +89,60 @@ export interface ModelFacts {
   swa_layer_count: number;
   n_ctx_train: number;
   kv_bytes_per_token: number;
+  weights_mib: number;
   is_moe: boolean;
   is_hybrid_or_recurrent: boolean;
   has_mtp: boolean;
-  has_vision: boolean;
   base_model_repo: string;
   checkpoint: string;
+  metadata_present: boolean;
 }
 
-export interface FitDevice {
-  device: string;
-  model_mib: number;
-  ctx_mib: number;
-  compute_mib: number;
-}
-
+/**
+ * Heuristic memory fit computed from model metadata + system-info (no
+ * fit-params endpoint). fitted_ctx is the largest f16 context that fits with
+ * all weights on GPU (0 = the full trained window fits); fits_fully is whether
+ * every layer fits on GPU (ngl = -1). When it doesn't, dense models get a
+ * partial -ngl and MoE models get -n-cpu-moe.
+ */
 export interface FitEstimate {
   backend: string;
-  fit_target_mib: number;
-  extra_args: string;
-  fitted_args: string;
+  fits_fully: boolean;
   fitted_ctx: number;
   fitted_ngl: number;
   fitted_ncmoe: number;
-  devices: FitDevice[];
-  fits_fully: boolean;
+  weights_mib: number;
+  kv_mib: number;
+  compute_mib: number;
+  total_mib: number;
+  available_mib: number;
+  degraded: boolean;
   ok: boolean;
-  error: string;
+  note?: string;
 }
 
 export interface BenchParams {
   d?: number;
   b?: number;
   ub?: number;
-  ctk?: string;
-  ctv?: string;
   spec_n?: number;
   ladder?: boolean;
 }
 
+/**
+ * One measured configuration from the coordinated bench methodology (load →
+ * chat/completions → read timings/usage). Depth is emulated by priming the
+ * request with a long prompt; ttft_ms/tps are the mean of the measured runs.
+ */
 export interface BenchPoint {
   backend: string;
+  label: string;
+  ctx_size: number;
+  llamacpp_args: string;
   params: BenchParams;
-  pp_avg_ts: number;
-  tg_avg_ts: number;
-  n_depth: number;
+  ttft_ms: number;
+  tps: number;
+  vram_gb: number;
   ok: boolean;
   error?: string;
 }
@@ -150,9 +156,9 @@ export interface SamplingDefaults {
 }
 
 export interface AutoOptExpected {
-  pp_ts?: number;
-  tg_ts?: number;
-  vram_mib?: number;
+  ttft_ms?: number;
+  tps?: number;
+  vram_gb?: number;
 }
 
 export interface AutoOptRecommendation {
@@ -160,7 +166,6 @@ export interface AutoOptRecommendation {
   tradeoff?: string;
   llamacpp_backend: string;
   ctx_size: number;
-  mmproj_enabled: boolean;
   llamacpp_args: string;
   rationale: string[];
   expected?: AutoOptExpected;

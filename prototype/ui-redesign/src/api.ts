@@ -6,24 +6,6 @@
 
 import { recipeOptionsForModel, samplingForModel, type RecipeOptions } from './presetStore';
 import { COLLECTION_IMAGE_SIZE } from './features/collections/collectionImageConfig';
-import type { BenchPoint as LlamacppBenchPoint, FitEstimate as LlamacppFitEstimate } from './features/autoOpt/autoOptTypes';
-
-export interface LlamacppFitParamsRequest {
-  model: string;
-  backend: string;
-  args?: string | string[];
-  fit_target_mib?: number;
-}
-
-export interface LlamacppBenchRequest {
-  model: string;
-  backend: string;
-  d?: number | number[];
-  b?: number;
-  ub?: number;
-  ctk?: string;
-  ctv?: string;
-}
 
 function detectDefaultBaseUrl(): string {
   if (typeof window !== 'undefined' && window.location) {
@@ -103,7 +85,6 @@ function normalizeHealth(data: unknown): HealthData {
     websocket_port: Number(obj.websocket_port || 0),
     all_models_loaded: loaded,
     max_models: isObject(obj.max_models) ? obj.max_models as Record<string, number> : {},
-    features: Array.isArray(obj.features) ? obj.features.map(String) : [],
   };
 }
 
@@ -139,7 +120,6 @@ export interface HealthData {
   websocket_port: number;
   all_models_loaded: LoadedModel[];
   max_models: Record<string, number>;
-  features: string[];
 }
 
 export interface LoadedModel {
@@ -1584,61 +1564,30 @@ class LemonadeAPI {
     return [];
   }
 
-  // ── llama.cpp tool endpoints (fit-params / bench) ──────────────
+  // ── AutoOpt benchmark orchestration (generic endpoints) ────────
 
-  async llamacppFitParams(request: LlamacppFitParamsRequest, signal?: AbortSignal): Promise<LlamacppFitEstimate> {
-    return this._json<LlamacppFitEstimate>('/api/v1/backends/llamacpp/fit-params', {
-      method: 'POST',
-      body: request,
-      signal,
-      cache: 'no-store',
-    } as LemonadeRequestInit);
-  }
-
-  async llamacppBench(
-    request: LlamacppBenchRequest,
-    opts: { signal?: AbortSignal; onProgress?: (detail: string) => void } = {},
-  ): Promise<LlamacppBenchPoint[]> {
-    const resp = await this._fetch('/api/v1/backends/llamacpp/bench', {
-      method: 'POST',
-      body: request,
-      signal: opts.signal,
-      cache: 'no-store',
-    } as LemonadeRequestInit);
-
-    const reader = resp.body?.getReader();
-    if (!reader) throw new Error('No response body from llama-bench.');
-    const dec = new TextDecoder();
-    let buf = '';
-    let currentEventType = 'progress';
-    let points: LlamacppBenchPoint[] | null = null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
-          currentEventType = line.substring(6).trim() || 'progress';
-          continue;
-        }
-        if (!line.startsWith('data:')) continue;
-        const data = JSON.parse(line.substring(5).trim()) as Record<string, unknown>;
-        if (currentEventType === 'error') {
-          throw new Error(String(data.error || data.message || 'llama-bench failed'));
-        }
-        if (currentEventType === 'progress' && typeof data.detail === 'string') {
-          opts.onProgress?.(data.detail);
-        }
-        if (currentEventType === 'complete' && Array.isArray(data.points)) {
-          points = data.points as LlamacppBenchPoint[];
-        }
-      }
-    }
-    if (!points) throw new Error('llama-bench stream ended without results.');
-    return points;
+  /**
+   * Load a model with an EXACT recipe-options body, bypassing preset staging.
+   * Used by the AutoOpt controller's bench/load-test methodology so the measured
+   * configuration is precisely the one requested (mirrors `lemonade bench`).
+   * A non-200 reply throws — a load failure is a first-class benchmark signal.
+   */
+  async benchLoadModel(
+    modelName: string,
+    options: { backend?: string; ctx_size: number; llamacpp_args?: string },
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const body: Record<string, unknown> = {
+      model_name: modelName,
+      save_options: false,
+      merge_args: false,
+      ctx_size: options.ctx_size,
+      llamacpp_args: options.llamacpp_args || '',
+    };
+    if (options.backend) body.llamacpp_backend = options.backend;
+    const result = await this._json('/api/v1/load', { method: 'POST', body, signal } as LemonadeRequestInit);
+    this._notifyModelsChanged();
+    return result;
   }
 
   async chatCompletionRaw(

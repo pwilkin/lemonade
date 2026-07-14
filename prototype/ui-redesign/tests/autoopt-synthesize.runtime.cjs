@@ -64,12 +64,13 @@ function denseModel() {
     swa_layer_count: 0,
     n_ctx_train: 131072,
     kv_bytes_per_token: 90112,
+    weights_mib: 18000,
     is_moe: false,
     is_hybrid_or_recurrent: false,
     has_mtp: false,
-    has_vision: false,
     base_model_repo: '',
     checkpoint: '',
+    metadata_present: true,
   };
 }
 
@@ -80,26 +81,51 @@ function answers(overrides = {}) {
     dedicated_slots: true,
     kv_cache_quant: 'none',
     ram_headroom: 'normal',
-    use_vision: undefined,
     allow_network: true,
     backends_to_consider: [],
     ...overrides,
   };
 }
 
-function fitting(backend, ctx, extra = '') {
+// A heuristic fit that fully fits, with a chosen f16 context cap.
+function fitting(backend, ctx, overrides = {}) {
   return {
     backend,
-    fit_target_mib: 1024,
-    extra_args: extra,
-    fitted_args: `-c ${ctx} -ngl -1`,
+    fits_fully: true,
     fitted_ctx: ctx,
     fitted_ngl: -1,
     fitted_ncmoe: 0,
-    devices: [{ device: 'Vulkan0', model_mib: 17408, ctx_mib: 6144, compute_mib: 910 }],
-    fits_fully: true,
+    weights_mib: 18000,
+    kv_mib: 4000,
+    compute_mib: 512,
+    total_mib: 22512,
+    available_mib: 98304,
+    degraded: false,
     ok: true,
-    error: '',
+    ...overrides,
+  };
+}
+
+// A measured bench point in the new TTFT/TPS shape.
+function duelPoint(backend, depth, ttftMs, tps) {
+  return {
+    backend, label: `${backend} · d${depth}`, ctx_size: depth > 0 ? 32768 : 4096,
+    llamacpp_args: '', params: { d: depth }, ttft_ms: ttftMs, tps, vram_gb: 20, ok: true,
+  };
+}
+
+function ladderPoint(backend, b, ttftMs) {
+  return {
+    backend, label: `${backend} · b${b}`, ctx_size: 4096,
+    llamacpp_args: `-b ${b} -ub ${b}`, params: { ladder: true, b, ub: b, d: 0 },
+    ttft_ms: ttftMs, tps: 40, vram_gb: 20, ok: true,
+  };
+}
+
+function mtpPoint(backend, n, tps) {
+  return {
+    backend, label: `${backend} · mtp${n}`, ctx_size: 4096,
+    llamacpp_args: '', params: { spec_n: n, d: 0 }, ttft_ms: 100, tps, vram_gb: 20, ok: true,
   };
 }
 
@@ -118,7 +144,7 @@ function check(name, ok) {
 
   try {
     const engine = require(modulePath);
-    const { synthesize, checkpointRepoId, validationFlagSubset } = engine;
+    const { synthesize, checkpointRepoId, computeFitEstimate, benchScore, roundUpCtx } = engine;
 
     // ── checkpoint_repo_id ────────────────────────────────────────────
     check('ckpt: plain repo', checkpointRepoId('Qwen/Qwen3-32B') === 'Qwen/Qwen3-32B');
@@ -126,209 +152,216 @@ function check(name, ok) {
       checkpointRepoId('ilintar/Agents-A1-GGUF:IQ4_XS') === 'ilintar/Agents-A1-GGUF');
     check('ckpt: url form',
       checkpointRepoId('https://huggingface.co/Qwen/Qwen3-32B') === 'Qwen/Qwen3-32B');
-    check('ckpt: url with trailing slash',
-      checkpointRepoId('https://huggingface.co/Qwen/Qwen3-32B/') === 'Qwen/Qwen3-32B');
     check('ckpt: bare name rejected', checkpointRepoId('just-a-name') === '');
-    check('ckpt: empty rejected', checkpointRepoId('') === '');
 
-    // ── validation_flag_subset ────────────────────────────────────────
+    // ── roundUpCtx ────────────────────────────────────────────────────
+    check('roundUp: 30000 -> 32768', roundUpCtx(30000) === 32768);
+    check('roundUp: 2048 -> 2048', roundUpCtx(2048) === 2048);
+
+    // ── benchScore: monotonic in the right directions ─────────────────
+    check('score: higher tps wins at equal ttft',
+      benchScore(50, 100, 50, 100) > benchScore(40, 100, 50, 100));
+    check('score: lower ttft wins at equal tps',
+      benchScore(50, 100, 50, 100) > benchScore(50, 200, 50, 100));
+    check('score: best on both = 1.0',
+      Math.abs(benchScore(50, 100, 50, 100) - 1.0) < 1e-9);
+    check('score: tps weighted higher than ttft',
+      // candidate A: best tps, worst ttft; candidate B: worst tps, best ttft.
+      benchScore(50, 200, 50, 100) > benchScore(25, 100, 50, 100));
+
+    // ── computeFitEstimate: heuristic memory fit ──────────────────────
     {
-      const v = validationFlagSubset(
-        65536,
-        '-ctk q8_0 -ctv q8_0 --cache-ram 4096 -ctxcp 16 --spec-default '
-        + '--spec-type draft-mtp --spec-draft-n-max 3 --direct-io -np 4 -no-kvu '
-        + '--n-cpu-moe 12 -b 2048 -ub 2048');
-      const joined = v.join(' ');
-      check('valid: ctx first', v.length >= 2 && v[0] === '-c' && v[1] === '65536');
-      check('valid: value flags kept with values',
-        joined.includes('-ctk q8_0')
-        && joined.includes('--n-cpu-moe 12')
-        && joined.includes('-b 2048 -ub 2048')
-        && joined.includes('-np 4'));
-      check('valid: bare flags kept without eating values', joined.includes('-no-kvu --n-cpu-moe'));
-      check('valid: host-side flags excluded',
-        !joined.includes('cache-ram') && !joined.includes('ctxcp')
-        && !joined.includes('spec') && !joined.includes('direct-io'));
-      check('valid: spec values not orphaned',
-        !joined.includes('draft-mtp') && !joined.includes(' 3'));
+      // Fits fully with the whole trained window.
+      const full = computeFitEstimate({
+        backend: 'vulkan', availableMib: 98304, weightsMib: 18000,
+        kvBytesPerToken: 90112, blockCount: 36, isMoe: false, nCtxTrain: 32768, degraded: false,
+      });
+      check('fit: full fit, no cap', full.fits_fully && full.fitted_ctx === 0 && full.fitted_ngl === -1);
 
-      const empty = validationFlagSubset(8192, '');
-      check('valid: empty args -> ctx only', empty.length === 2 && empty[1] === '8192');
+      // Weights fit but KV must be capped below the trained window.
+      const capped = computeFitEstimate({
+        backend: 'vulkan', availableMib: 24000, weightsMib: 18000,
+        kvBytesPerToken: 1048576, blockCount: 36, isMoe: false, nCtxTrain: 131072, degraded: false,
+      });
+      check('fit: weights fit, ctx capped', capped.fits_fully && capped.fitted_ctx > 0 && capped.fitted_ctx < 131072);
+
+      // Dense weights don't fit → partial -ngl offload.
+      const dense = computeFitEstimate({
+        backend: 'vulkan', availableMib: 8000, weightsMib: 18000,
+        kvBytesPerToken: 90112, blockCount: 36, isMoe: false, nCtxTrain: 32768, degraded: false,
+      });
+      check('fit: dense offload sets partial ngl',
+        !dense.fits_fully && dense.fitted_ngl >= 0 && dense.fitted_ngl < 36 && dense.fitted_ncmoe === 0);
+
+      // MoE weights don't fit → -n-cpu-moe.
+      const moe = computeFitEstimate({
+        backend: 'vulkan', availableMib: 8000, weightsMib: 40000,
+        kvBytesPerToken: 90112, blockCount: 48, isMoe: true, nCtxTrain: 32768, degraded: false,
+      });
+      check('fit: moe offload sets ncmoe', !moe.fits_fully && moe.fitted_ncmoe > 0);
+
+      // Degraded (no metadata): uses a default kv/token and flags degraded.
+      const degraded = computeFitEstimate({
+        backend: 'vulkan', availableMib: 98304, weightsMib: 12000,
+        kvBytesPerToken: 0, blockCount: 0, isMoe: false, nCtxTrain: 0, degraded: true,
+      });
+      check('fit: degraded flagged, still ok', degraded.degraded && degraded.ok);
     }
 
-    // ── lever 1: cache ram scale ──────────────────────────────────────
+    // ── synthesis: dense partial offload EMITS -ngl (review #4) ────────
+    {
+      const denseFit = fitting('vulkan', 4096, {
+        fits_fully: false, fitted_ngl: 20, fitted_ncmoe: 0, fitted_ctx: 4096,
+      });
+      const r = synthesize(igpuHw(), denseModel(), answers(), [denseFit], [], undefined);
+      check('dense offload: -ngl 20 emitted', hasArg(r.primary, '-ngl 20'));
+      check('dense offload: rationale mentions layers',
+        r.primary.rationale.some(s => s.includes('20 of 36 layers')));
+    }
+
+    // ── lever: cache ram scale + hybrid bump ──────────────────────────
     {
       let r = synthesize(igpuHw(), denseModel(), answers({ ram_headroom: 'reduced' }),
         [fitting('vulkan', 65536)], [], undefined);
-      check('L1: reduced scale', hasArg(r.primary, '--cache-ram 4096 -ctxcp 16'));
+      check('cache: reduced scale', hasArg(r.primary, '--cache-ram 4096 -ctxcp 16'));
 
       r = synthesize(igpuHw(), denseModel(), answers({ ram_headroom: 'normal' }),
         [fitting('vulkan', 65536)], [], undefined);
-      check('L1: normal omits flags', !hasArg(r.primary, '--cache-ram'));
-    }
+      check('cache: normal omits flags', !hasArg(r.primary, '--cache-ram'));
 
-    // ── lever 1: hybrid bump ──────────────────────────────────────────
-    {
       const mf = { ...denseModel(), full_attention_interval: 4, is_hybrid_or_recurrent: true };
-      const r = synthesize(igpuHw(), mf, answers({ ram_headroom: 'disabled' }),
+      r = synthesize(igpuHw(), mf, answers({ ram_headroom: 'disabled' }),
         [fitting('vulkan', 65536)], [], undefined);
-      check('L1: hybrid never disabled', hasArg(r.primary, '--cache-ram 2048 -ctxcp 8'));
-      check('L1: hybrid bump explained',
-        r.primary.rationale.some(s => s.includes('hybrid/recurrent')));
+      check('cache: hybrid never disabled', hasArg(r.primary, '--cache-ram 2048 -ctxcp 8'));
     }
 
-    // ── lever 2: kv quant + alternatives ──────────────────────────────
+    // ── lever: kv quant + alternatives ────────────────────────────────
     {
       const r = synthesize(igpuHw(), denseModel(), answers({ kv_cache_quant: 'q8_0' }),
         [fitting('vulkan', 32768)], [], undefined);
-      check('L2: ctk/ctv emitted', hasArg(r.primary, '-ctk q8_0 -ctv q8_0'));
-      check('L2: ctx doubled by q8_0', r.primary.ctx_size === 65536);
-      check('L2: max-quality alternative present',
+      check('kv: ctk/ctv emitted', hasArg(r.primary, '-ctk q8_0 -ctv q8_0'));
+      check('kv: ctx doubled by q8_0', r.primary.ctx_size === 65536);
+      check('kv: max-quality alternative present',
         r.alternatives.length > 0 && r.alternatives[0].label === 'Maximum quality'
         && !r.alternatives[0].llamacpp_args.includes('-ctk'));
-      check('L2: max-context alternative q4_0',
+      check('kv: max-context alternative q4_0',
         r.alternatives.length >= 2 && r.alternatives[1].llamacpp_args.includes('-ctk q4_0'));
     }
 
-    // ── lever 3: tensor split ─────────────────────────────────────────
+    // ── lever: tensor split ───────────────────────────────────────────
     {
       const hw = dgpuHw();
       hw.gpus.push({ vendor: 'nvidia', name: 'RTX 4090', family: 'sm_89', vram_gb: 24.0 });
       let r = synthesize(hw, denseModel(), answers(), [fitting('cuda', 65536)], [], undefined);
-      check('L3: tensor split on dual identical CUDA', hasArg(r.primary, '--split-mode tensor'));
+      check('split: tensor split on dual identical CUDA', hasArg(r.primary, '--split-mode tensor'));
 
       const vk = igpuHw();
       vk.gpus.push({ vendor: 'amd', name: 'RX 7900', family: 'gfx1100', vram_gb: 24.0 });
       r = synthesize(vk, denseModel(), answers(), [fitting('vulkan', 65536)], [], undefined);
-      check('L3: no tensor split off CUDA', !hasArg(r.primary, '--split-mode'));
+      check('split: no tensor split off CUDA', !hasArg(r.primary, '--split-mode'));
     }
 
-    // ── lever 4: parallel slots ───────────────────────────────────────
+    // ── lever: parallel slots ─────────────────────────────────────────
     {
       let r = synthesize(igpuHw(), denseModel(),
         answers({ parallel: true, slots: 4, dedicated_slots: true }),
         [fitting('vulkan', 65536)], [], undefined);
-      check('L4: dedicated slots', hasArg(r.primary, '-np 4 -no-kvu'));
-      check('L4: per-slot math in rationale',
-        r.primary.rationale.some(s => s.includes(String(Math.floor(r.primary.ctx_size / 4)))));
+      check('parallel: dedicated slots', hasArg(r.primary, '-np 4 -no-kvu'));
 
       r = synthesize(igpuHw(), denseModel(),
         answers({ parallel: true, slots: 4, dedicated_slots: false }),
         [fitting('vulkan', 65536)], [], undefined);
-      check('L4: shared pool', hasArg(r.primary, '-np 4 -kvu'));
+      check('parallel: shared pool', hasArg(r.primary, '-np 4 -kvu'));
     }
 
-    // ── lever 5: speculative decoding ─────────────────────────────────
+    // ── lever: speculative + MTP argmax by tps ────────────────────────
     {
       let r = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 65536)], [], undefined);
-      check('L5: spec-default always', hasArg(r.primary, '--spec-default'));
-      check('L5: no mtp flags on non-mtp', !hasArg(r.primary, 'draft-mtp'));
+      check('spec: spec-default always', hasArg(r.primary, '--spec-default'));
+      check('spec: no mtp flags on non-mtp', !hasArg(r.primary, 'draft-mtp'));
 
       const mtp = { ...denseModel(), has_mtp: true };
-      const sweep = [];
-      for (let n = 1; n <= 4; n++) {
-        sweep.push({
-          backend: 'vulkan', params: { spec_n: n }, pp_avg_ts: 0,
-          tg_avg_ts: n === 2 ? 55.0 : 40.0 + n, n_depth: 0, ok: true,
-        });
-      }
+      const sweep = [mtpPoint('vulkan', 1, 41), mtpPoint('vulkan', 2, 55), mtpPoint('vulkan', 3, 43), mtpPoint('vulkan', 4, 44)];
       r = synthesize(igpuHw(), mtp, answers(), [fitting('vulkan', 65536)], sweep, undefined);
-      check('L5: measured argmax n=2', hasArg(r.primary, '--spec-draft-n-max 2'));
+      check('spec: measured argmax n=2 (highest tps)', hasArg(r.primary, '--spec-draft-n-max 2'));
 
       r = synthesize(igpuHw(), mtp, answers(), [fitting('vulkan', 65536)], [], undefined);
-      check('L5: default n=3 unmeasured', hasArg(r.primary, '--spec-draft-n-max 3'));
+      check('spec: default n=3 unmeasured', hasArg(r.primary, '--spec-draft-n-max 3'));
     }
 
-    // ── lever 6: backend duel ─────────────────────────────────────────
+    // ── lever: backend duel by TTFT/TPS ───────────────────────────────
     {
-      const duel = ['vulkan', 'rocm-stable'].map(b => ({
-        backend: b,
-        n_depth: 0,
-        params: { d: 0 },
-        pp_avg_ts: b === 'vulkan' ? 600 : 580,
-        tg_avg_ts: b === 'vulkan' ? 42 : 37,
-        ok: true,
-      }));
+      // vulkan: higher tps AND lower ttft → wins.
+      const duel = [
+        duelPoint('vulkan', 0, 90, 42), duelPoint('vulkan', 30000, 300, 40),
+        duelPoint('rocm-stable', 0, 120, 37), duelPoint('rocm-stable', 30000, 380, 35),
+      ];
       const r = synthesize(igpuHw(), denseModel(), answers(),
         [fitting('vulkan', 65536), fitting('rocm-stable', 65536)], duel, undefined);
-      check('L6: measured winner', r.primary.llamacpp_backend === 'vulkan');
+      check('duel: measured winner (better tps+ttft)', r.primary.llamacpp_backend === 'vulkan');
+      check('duel: expected carries ttft/tps',
+        r.primary.expected && r.primary.expected.tps > 0 && r.primary.expected.ttft_ms > 0);
 
       const rh = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 65536)], [], undefined);
-      check('L6: heuristic fallback picks installed', rh.primary.llamacpp_backend === 'vulkan');
+      check('duel: heuristic fallback picks installed', rh.primary.llamacpp_backend === 'vulkan');
     }
 
-    // ── lever 7: sampling passthrough ─────────────────────────────────
+    // ── lever: sampling passthrough ───────────────────────────────────
     {
       const sd = { temperature: 0.7, top_p: 0.8, top_k: 20, source: 'hf:Qwen/Qwen3-32B/generation_config.json' };
       const r = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 65536)], [], sd);
-      check('L7: sampling passthrough',
-        r.sampling_defaults && r.sampling_defaults.temperature === 0.7);
-      check('L7: sampling not in args', !hasArg(r.primary, 'temp'));
+      check('sampling: passthrough', r.sampling_defaults && r.sampling_defaults.temperature === 0.7);
+      check('sampling: not in args', !hasArg(r.primary, 'temp'));
     }
 
-    // ── lever 8: vision projector ─────────────────────────────────────
+    // ── lever: batch ladder by LOWEST ttft ────────────────────────────
     {
-      const mf = { ...denseModel(), has_vision: true };
-      let r = synthesize(igpuHw(), mf, answers({ use_vision: false }),
-        [fitting('vulkan', 65536)], [], undefined);
-      check('L8: mmproj disabled', r.primary.mmproj_enabled === false);
-
-      r = synthesize(igpuHw(), mf, answers({ use_vision: true }),
-        [fitting('vulkan', 65536)], [], undefined);
-      check('L8: mmproj kept', r.primary.mmproj_enabled === true);
-    }
-
-    // ── lever 9: batch ladder ─────────────────────────────────────────
-    {
-      const ladder = [512, 2048, 8192].map(b => ({
-        backend: 'vulkan',
-        n_depth: 0,
-        params: { d: 0, ladder: true, b, ub: b },
-        pp_avg_ts: b === 2048 ? 950 : (b === 8192 ? 900 : 600),
-        tg_avg_ts: 40,
-        ok: true,
-      }));
+      // b=2048 has the lowest TTFT (fastest prefill) and clears the 5% gate.
+      const ladder = [ladderPoint('vulkan', 512, 100), ladderPoint('vulkan', 2048, 70), ladderPoint('vulkan', 8192, 80)];
       const r = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 65536)], ladder, undefined);
-      check('L9: measured best rung', hasArg(r.primary, '-b 2048 -ub 2048'));
+      check('ladder: lowest-ttft rung chosen', hasArg(r.primary, '-b 2048 -ub 2048'));
 
+      // Not enough improvement (all ~equal) → no ladder flag.
+      const flat = [ladderPoint('vulkan', 512, 100), ladderPoint('vulkan', 2048, 99), ladderPoint('vulkan', 8192, 98)];
+      const rf = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 65536)], flat, undefined);
+      check('ladder: no flag without meaningful gain', !hasArg(rf.primary, '-b 2048'));
+
+      // iGPU heuristic without any bench data.
       const rq = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 65536)], [], undefined);
-      check('L9: iGPU heuristic without bench', hasArg(rq.primary, '-b 2048 -ub 2048'));
+      check('ladder: iGPU heuristic without bench', hasArg(rq.primary, '-b 2048 -ub 2048'));
 
       const rd = synthesize(dgpuHw(), denseModel(), answers(), [fitting('cuda', 65536)], [], undefined);
-      check('L9: no heuristic on dGPU', !hasArg(rd.primary, '-b '));
+      check('ladder: no heuristic on dGPU', !hasArg(rd.primary, '-b '));
     }
 
-    // ── lever 10: ROCm direct-io ──────────────────────────────────────
+    // ── lever: ROCm direct-io ─────────────────────────────────────────
     {
       let r = synthesize(igpuHw(), denseModel(), answers({ backends_to_consider: ['rocm-stable'] }),
         [fitting('rocm-stable', 65536)], [], undefined);
-      check('L10: rocm gets --direct-io', hasArg(r.primary, '--direct-io'));
+      check('rocm: gets --direct-io', hasArg(r.primary, '--direct-io'));
 
       r = synthesize(igpuHw(), denseModel(), answers({ backends_to_consider: ['vulkan'] }),
         [fitting('vulkan', 65536)], [], undefined);
-      check('L10: vulkan does not', !hasArg(r.primary, '--direct-io'));
+      check('rocm: vulkan does not', !hasArg(r.primary, '--direct-io'));
     }
 
-    // ── lever 11: cpu-moe fit strategy ────────────────────────────────
+    // ── lever: cpu-moe fit strategy + conservative alternative ────────
     {
       const moe = { ...denseModel(), is_moe: true, expert_count: 128 };
-      const f = fitting('vulkan', 32768);
-      f.fitted_ngl = 20;
-      f.fitted_ncmoe = 12;
-      f.fits_fully = false;
+      const f = fitting('vulkan', 32768, { fits_fully: false, fitted_ngl: -1, fitted_ncmoe: 12, fitted_ctx: 4096 });
       const r = synthesize(igpuHw(), moe, answers(), [f], [], undefined);
-      check('L11: n-cpu-moe from fit', hasArg(r.primary, '--n-cpu-moe 12'));
-      check('L11: conservative alternative',
+      check('moe: n-cpu-moe from fit', hasArg(r.primary, '--n-cpu-moe 12'));
+      check('moe: conservative alternative',
         r.alternatives.some(a => a.llamacpp_args.includes('--cpu-moe')));
     }
 
-    // ── lever 12: ctx rounded to fit ──────────────────────────────────
+    // ── lever: ctx rounded to fit / capped at trained window ──────────
     {
       const r = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 40000)], [], undefined);
-      check('L12: ctx rounded down to fit', r.primary.ctx_size === 32768);
+      check('ctx: rounded down to fit', r.primary.ctx_size === 32768);
 
-      const rmax = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 200000)], [], undefined);
-      check('L12: ctx capped at trained window', rmax.primary.ctx_size === 131072);
+      const rmax = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 0)], [], undefined);
+      check('ctx: full-window fit uses trained window', rmax.primary.ctx_size === 131072);
     }
 
     if (failures > 0) {

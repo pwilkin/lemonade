@@ -35,8 +35,36 @@ function recommendationRecipeOptions(rec: AutoOptRecommendation): RecipeOptions 
   if (rec.ctx_size > 0) options.ctx_size = rec.ctx_size;
   if (rec.llamacpp_backend) options.llamacpp_backend = rec.llamacpp_backend;
   if (rec.llamacpp_args) options.llamacpp_args = rec.llamacpp_args;
-  if (rec.mmproj_enabled === false) options.mmproj_enabled = false;
   return options;
+}
+
+function installedBackends(systemInfo: Record<string, unknown> | null | undefined): string[] {
+  const recipes = (systemInfo?.recipes || {}) as Record<string, { backends?: Record<string, { state?: unknown }> }>;
+  const backends = recipes.llamacpp?.backends || {};
+  return Object.entries(backends)
+    .filter(([, info]) => ['installed', 'update_available'].includes(String(info?.state || '')))
+    .map(([name]) => name);
+}
+
+/**
+ * Guard against applying a run that no longer matches this server/model
+ * (review #5): the model may have been re-pulled with a different checkpoint,
+ * or the recommended backend may not be installed here. Runs are already
+ * scoped to their server in storage; this is defense-in-depth for the apply.
+ */
+export function assertRunApplicable(run: AutoOptRunRecord, modelInfo: ModelInfo | null | undefined): void {
+  const runCheckpoint = String(run.checkpoint || '').trim();
+  const currentCheckpoint = String((modelInfo as Record<string, unknown> | null | undefined)?.checkpoint || '').trim();
+  if (runCheckpoint && currentCheckpoint && runCheckpoint !== currentCheckpoint) {
+    throw new Error(`This run was measured on a different build of ${run.model} `
+      + `(${runCheckpoint} vs current ${currentCheckpoint}). Re-run AutoOpt to apply it.`);
+  }
+  const backend = run.result?.primary?.llamacpp_backend;
+  const installed = installedBackends(api.systemInfoData);
+  if (backend && installed.length > 0 && !installed.includes(backend)) {
+    throw new Error(`The recommended backend "${backend}" is not installed on this server. `
+      + 'Re-run AutoOpt to pick an available backend.');
+  }
 }
 
 function samplingFromDefaults(defaults: SamplingDefaults | undefined): SamplingParams {
@@ -54,6 +82,7 @@ export function createPresetFromRun(
   rec: AutoOptRecommendation,
   modelInfo: ModelInfo | null | undefined,
 ): Preset {
+  assertRunApplicable(run, modelInfo);
   const samplingDefaults = run.result?.sampling_defaults;
   const preset = sanitizePreset({
     id: `u-${Date.now()}`,
@@ -87,11 +116,19 @@ export async function applyRunNow(
   rec: AutoOptRecommendation,
   { save }: { save: boolean },
 ): Promise<void> {
+  assertRunApplicable(run, api.allModels.find(model =>
+    String((model as Record<string, unknown>).model_name || model.name || model.id || '').trim() === run.model));
+  const loaded = api.loadedModels.some(model => model.model_name === run.model);
   if (save) {
-    const loaded = api.loadedModels.some(model => model.model_name === run.model);
+    // The preset + optimized tuning are already saved; reload (loaded) or load
+    // so the model comes up with them.
     if (loaded) await api.reloadModel(run.model);
     else await api.loadModel(run.model);
     return;
   }
-  await api.loadModel(run.model, { ...recommendationRecipeOptions(rec), save_options: false });
+  // Try now without saving: apply the temp recommendation directly. If the
+  // model is already loaded, reload it with the temp options (review #2).
+  const tempOptions = { ...recommendationRecipeOptions(rec), save_options: false };
+  if (loaded) await api.reloadModel(run.model, tempOptions);
+  else await api.loadModel(run.model, tempOptions);
 }

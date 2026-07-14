@@ -1,9 +1,7 @@
 import api from '../../api';
 import {
-  AutoOptUnsupportedError,
   AUTOOPT_STAGES,
   executeAutoOptRun,
-  serverSupportsLlamacppTools,
 } from './autoOptController';
 import {
   AutoOptRunRecord,
@@ -16,14 +14,22 @@ export interface AutoOptState {
   runs: AutoOptRunRecord[];
   activeRunId: string | null;
   lastError: string | null;
-  unsupported: boolean;
   pendingCancel: Set<string>;
 }
 
 type Listener = (state: AutoOptState) => void;
 
-const STORAGE_KEY = 'lemonade_autoopt_runs_v1';
+const STORAGE_PREFIX = 'lemonade_autoopt_runs_v2';
 const MAX_RUNS = 20;
+
+// Runs are scoped to the Lemonade server they were measured on: a run from
+// another server must not leak into — or be applied against — this one.
+function storageKey(): string {
+  let base = 'default';
+  try { base = api.baseUrl || 'default'; } catch {}
+  const normalized = String(base).toLowerCase().replace(/\/+$/, '');
+  return `${STORAGE_PREFIX}::${normalized}`;
+}
 
 function isoNow(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -66,7 +72,7 @@ function coerceStoredRun(raw: unknown): AutoOptRunRecord | null {
 function readStoredRuns(): AutoOptRunRecord[] {
   if (typeof localStorage === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey());
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     const items = Array.isArray(parsed?.runs) ? parsed.runs : [];
@@ -81,7 +87,7 @@ function readStoredRuns(): AutoOptRunRecord[] {
 
 function writeStoredRuns(runs: AutoOptRunRecord[]): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, runs: runs.slice(0, MAX_RUNS) }));
+  localStorage.setItem(storageKey(), JSON.stringify({ version: 2, runs: runs.slice(0, MAX_RUNS) }));
 }
 
 function errorMessage(err: unknown): string {
@@ -109,20 +115,11 @@ class AutoOptStore {
     runs: readStoredRuns(),
     activeRunId: null,
     lastError: null,
-    unsupported: false,
     pendingCancel: new Set(),
   };
   private listeners = new Set<Listener>();
   private controllers = new Map<string, AbortController>();
   private progressDetail = new Map<string, string>();
-  private probed = false;
-
-  constructor() {
-    api.onStatusChange(status => {
-      if (status === 'connected') void this.probeSupport();
-    });
-    if (api.isConnected) void this.probeSupport();
-  }
 
   snapshot(): AutoOptState {
     return this.state;
@@ -131,22 +128,9 @@ class AutoOptStore {
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     listener(this.state);
-    if (api.isConnected) void this.probeSupport();
     return () => {
       this.listeners.delete(listener);
     };
-  }
-
-  async probeSupport(): Promise<void> {
-    if (this.probed) return;
-    this.probed = true;
-    try {
-      const health = api.healthData || await api.health();
-      const supported = serverSupportsLlamacppTools(health);
-      if (supported === this.state.unsupported) this.setState({ unsupported: !supported });
-    } catch {
-      this.probed = false;
-    }
   }
 
   setActiveRun(id: string | null): void {
@@ -232,7 +216,6 @@ class AutoOptStore {
       });
     } catch (err) {
       const cancelled = controller.signal.aborted || (err as { name?: string } | null)?.name === 'AbortError';
-      if (err instanceof AutoOptUnsupportedError) this.setState({ unsupported: true });
       this.updateRun(runId, run => {
         const next: AutoOptRunRecord = {
           ...run,

@@ -807,16 +807,16 @@ test.describe('Accessibility — capability chip toggle-button semantics (#2350)
 test.describe('Accessibility — AutoOpt run selection state (#2352)', () => {
   const mockAutoOpt = async (page: Page) => {
     await page.route('**/api/v1/health**', route => route.fulfill({
-      json: { status: 'ok', version: 'test', all_models_loaded: [], features: ['llamacpp-tools'] },
+      json: { status: 'ok', version: 'test', all_models_loaded: [] },
     }));
-    // AutoOpt runs are client-persisted; seed the rail through localStorage.
+    // AutoOpt runs are client-persisted and scoped to the server's base URL.
     await page.addInitScript(() => {
       const base = {
         checkpoint: '', answers: { parallel: { mode: 'single' }, kv_cache_quant: 'none', ram_headroom: 'normal', allow_network: true },
         allow_unload: false, stages: [], measurements: { fit: [], bench: [] },
       };
-      localStorage.setItem('lemonade_autoopt_runs_v1', JSON.stringify({
-        version: 1,
+      localStorage.setItem('lemonade_autoopt_runs_v2::http://127.0.0.1:13305', JSON.stringify({
+        version: 2,
         runs: [
           { ...base, id: 'run-b', model: 'org/model-b', status: 'completed', budget: 'standard', created_at: '2026-07-02T10:00:00Z', finished_at: '2026-07-02T10:12:00Z' },
           { ...base, id: 'run-a', model: 'org/model-a', status: 'completed', budget: 'quick', created_at: '2026-07-01T10:00:00Z', finished_at: '2026-07-01T10:01:00Z' },
@@ -880,7 +880,7 @@ test.describe('Accessibility — AutoOpt run selection state (#2352)', () => {
 test.describe('Accessibility — AutoOpt wizard dialog', () => {
   const openWizard = async (page: Page) => {
     await page.route('**/api/v1/health**', route => route.fulfill({
-      json: { status: 'ok', version: 'test', all_models_loaded: [], features: ['llamacpp-tools'] },
+      json: { status: 'ok', version: 'test', all_models_loaded: [] },
     }));
     await page.route('**/api/v1/models**', route => route.fulfill({
       json: { data: [{ id: 'org/chat-model', name: 'org/chat-model', labels: ['llm'], recipe: 'llamacpp', downloaded: true }] },

@@ -23,12 +23,11 @@ import {
   RAM_STEP,
   REVIEW_STEP,
   RUNNING_STEP,
-  VISION_STEP,
   WIZARD_INTRO,
   WIZARD_TITLE,
 } from './wizardCopy';
 
-type WizardStep = 'model' | 'parallel' | 'kv' | 'ram' | 'vision' | 'budget' | 'review' | 'running';
+type WizardStep = 'model' | 'parallel' | 'kv' | 'ram' | 'budget' | 'review' | 'running';
 
 function modelName(model: ModelInfo): string {
   return String((model as Record<string, unknown>).model_name || model.name || model.id || '').trim();
@@ -40,12 +39,6 @@ function isEligibleModel(model: ModelInfo): boolean {
   if (recipe !== 'llamacpp') return false;
   const caps = labelsFor(model);
   return caps.includes('chat') || caps.includes('omni');
-}
-
-function isVisionCapable(model: ModelInfo | undefined): boolean {
-  if (!model) return false;
-  const caps = labelsFor(model);
-  return caps.includes('vision') || caps.includes('omni');
 }
 
 function physicalMemoryGb(info: Record<string, unknown> | null): number | null {
@@ -81,7 +74,6 @@ const AutoOptWizard: React.FC<{
   const [kvQuant, setKvQuant] = useState<AutoOptKvCacheQuant>('q8_0');
   const [ramHeadroom, setRamHeadroom] = useState<AutoOptRamHeadroom>('normal');
   const [ramGb, setRamGb] = useState<number | null>(null);
-  const [useVision, setUseVision] = useState(true);
   const [budget, setBudget] = useState<AutoOptBudget>('standard');
   const [allowNetwork, setAllowNetwork] = useState(true);
   const [consent, setConsent] = useState(false);
@@ -136,17 +128,9 @@ const AutoOptWizard: React.FC<{
     }
   }, [open, selectedModel, loadedModels, models]);
 
-  const selectedModelInfo = useMemo(
-    () => models.find(model => modelName(model) === selectedModel),
-    [models, selectedModel],
-  );
-  const showVisionStep = isVisionCapable(selectedModelInfo);
-
   const steps = useMemo<WizardStep[]>(() => [
-    'model', 'parallel', 'kv', 'ram',
-    ...(showVisionStep ? ['vision' as WizardStep] : []),
-    'budget', 'review',
-  ], [showVisionStep]);
+    'model', 'parallel', 'kv', 'ram', 'budget', 'review',
+  ], []);
 
   const stepIndex = steps.indexOf(step);
   const benchmarkTier = budget !== 'quick';
@@ -171,10 +155,9 @@ const AutoOptWizard: React.FC<{
         : { mode: 'single' },
       kv_cache_quant: kvQuant,
       ram_headroom: ramHeadroom,
-      ...(showVisionStep ? { use_vision: useVision } : {}),
       allow_network: allowNetwork,
     },
-  }), [selectedModel, budget, consentRequired, consent, parallelMode, slots, dedicated, kvQuant, ramHeadroom, showVisionStep, useVision, allowNetwork]);
+  }), [selectedModel, budget, consentRequired, consent, parallelMode, slots, dedicated, kvQuant, ramHeadroom, allowNetwork]);
 
   const handleStart = useCallback(async () => {
     setSubmitError(null);
@@ -292,14 +275,6 @@ const AutoOptWizard: React.FC<{
             }, 'ram')}
           </fieldset>
         );
-      case 'vision':
-        return (
-          <fieldset className="preset-intent-fieldset autoopt-wizard__fieldset" data-autoopt-step="vision">
-            <legend>{VISION_STEP.legend}</legend>
-            <p className="preset-help">{VISION_STEP.help}</p>
-            {renderOptions(VISION_STEP.options, useVision, setUseVision, 'vision')}
-          </fieldset>
-        );
       case 'budget':
         return (
           <fieldset className="preset-intent-fieldset autoopt-wizard__fieldset" data-autoopt-step="budget">
@@ -331,7 +306,6 @@ const AutoOptWizard: React.FC<{
               <dt>Usage</dt><dd>{parallelMode === 'parallel' ? `Parallel · ${slots} slots${dedicated ? ' · dedicated server' : ''}` : 'Single user'}</dd>
               <dt>KV cache</dt><dd>{KV_QUANT_LABELS[kvQuant]}</dd>
               <dt>Prompt cache</dt><dd>{RAM_HEADROOM_LABELS[ramHeadroom]}</dd>
-              {showVisionStep && <><dt>Vision</dt><dd>{useVision ? 'Image input kept' : 'Text only'}</dd></>}
               <dt>Budget</dt><dd>{BUDGET_LABELS[budget]}</dd>
               <dt>Network</dt><dd>{allowNetwork ? 'Fetch model metadata from Hugging Face' : 'No network access'}</dd>
               <dt>Unload models</dt><dd>{!benchmarkTier ? 'Not needed for Fast Scan' : (loadedModels.length === 0 ? 'Nothing loaded' : (consent ? 'Allowed' : 'Not allowed'))}</dd>

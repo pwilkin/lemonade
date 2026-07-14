@@ -33,8 +33,10 @@ function stageGlyph(stage: AutoOptStage): string {
   }
 }
 
-function expectedValue(rec: AutoOptRecommendation, field: 'pp_ts' | 'tg_ts'): string {
-  return formatNumber(rec.expected?.[field]);
+function expectedValue(rec: AutoOptRecommendation, field: 'ttft_ms' | 'tps' | 'vram_gb'): string {
+  const value = rec.expected?.[field];
+  if (value === undefined) return '—';
+  return field === 'vram_gb' ? formatNumber(value, 2) : formatNumber(value);
 }
 
 function benchLadderRows(run: AutoOptRunRecord | undefined): BenchPoint[] {
@@ -197,21 +199,22 @@ const AutoOptRunDetail: React.FC<{
                 <div className="slideover__section">
                   <h3>Measurements</h3>
                   <p className="preset-help">
-                    {run.measurements.fit.length} memory-fit probes · {run.measurements.bench.length} benchmark samples
+                    {run.measurements.fit.length} heuristic fit estimates · {run.measurements.bench.length} measured configurations
                   </p>
                   {duel.length > 0 && (
                     <div className="autoopt-alt-table-wrap">
                       <table className="autoopt-alt-table" data-autoopt-bench-duel>
                         <thead>
-                          <tr><th>Backend</th><th>Depth</th><th>pp t/s</th><th>tg t/s</th><th>Status</th></tr>
+                          <tr><th>Backend</th><th>Depth</th><th>TTFT ms</th><th>tok/s</th><th>VRAM GB</th><th>Status</th></tr>
                         </thead>
                         <tbody>
                           {duel.map((row, index) => (
                             <tr key={index}>
                               <td>{row.backend}</td>
                               <td>{row.params?.d ?? '—'}</td>
-                              <td>{formatNumber(row.pp_avg_ts)}</td>
-                              <td>{formatNumber(row.tg_avg_ts)}</td>
+                              <td>{formatNumber(row.ttft_ms)}</td>
+                              <td>{formatNumber(row.tps)}</td>
+                              <td>{row.vram_gb > 0 ? formatNumber(row.vram_gb, 2) : '—'}</td>
                               <td>{row.ok === false ? (row.error || 'failed') : 'ok'}</td>
                             </tr>
                           ))}
@@ -223,7 +226,7 @@ const AutoOptRunDetail: React.FC<{
                     <div className="autoopt-alt-table-wrap">
                       <table className="autoopt-alt-table" data-autoopt-bench-ladder>
                         <thead>
-                          <tr><th>Backend</th><th>batch</th><th>ubatch</th><th>pp t/s</th></tr>
+                          <tr><th>Backend</th><th>batch</th><th>ubatch</th><th>TTFT ms</th></tr>
                         </thead>
                         <tbody>
                           {ladder.map((row, index) => (
@@ -231,7 +234,7 @@ const AutoOptRunDetail: React.FC<{
                               <td>{row.backend}</td>
                               <td>{row.params?.b ?? '—'}</td>
                               <td>{row.params?.ub ?? '—'}</td>
-                              <td>{formatNumber(row.pp_avg_ts)}</td>
+                              <td>{formatNumber(row.ttft_ms)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -250,7 +253,6 @@ const AutoOptRunDetail: React.FC<{
                       <div className="autoopt-rec-card__chips">
                         {selectedRec.llamacpp_backend && <span className="autoopt-chip">{selectedRec.llamacpp_backend}</span>}
                         {selectedRec.ctx_size > 0 && <span className="autoopt-chip">ctx {selectedRec.ctx_size.toLocaleString()}</span>}
-                        {selectedRec.mmproj_enabled === false && <span className="autoopt-chip">vision off</span>}
                         {result?.sampling_defaults?.temperature !== undefined && <span className="autoopt-chip">temp {result.sampling_defaults.temperature}</span>}
                         {result?.sampling_defaults?.min_p !== undefined && <span className="autoopt-chip">min_p {result.sampling_defaults.min_p}</span>}
                       </div>
@@ -279,9 +281,9 @@ const AutoOptRunDetail: React.FC<{
                           <th>Option</th>
                           <th>Backend</th>
                           <th>Context</th>
-                          <th>pp t/s</th>
-                          <th>tg t/s</th>
-                          <th>VRAM MiB</th>
+                          <th>TTFT ms</th>
+                          <th>tok/s</th>
+                          <th>VRAM GB</th>
                           <th />
                         </tr>
                       </thead>
@@ -291,9 +293,9 @@ const AutoOptRunDetail: React.FC<{
                             <td>{rec.label}</td>
                             <td>{rec.llamacpp_backend || '—'}</td>
                             <td>{rec.ctx_size !== undefined ? rec.ctx_size.toLocaleString() : '—'}</td>
-                            <td>{expectedValue(rec, 'pp_ts')}</td>
-                            <td>{expectedValue(rec, 'tg_ts')}</td>
-                            <td>{rec.expected?.vram_mib !== undefined ? rec.expected.vram_mib.toLocaleString() : '—'}</td>
+                            <td>{expectedValue(rec, 'ttft_ms')}</td>
+                            <td>{expectedValue(rec, 'tps')}</td>
+                            <td>{expectedValue(rec, 'vram_gb')}</td>
                             <td>
                               {index === selectedRecIndex
                                 ? <span className="autoopt-chip">Selected</span>

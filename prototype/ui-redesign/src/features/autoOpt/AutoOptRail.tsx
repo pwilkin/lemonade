@@ -127,20 +127,16 @@ const AutoOptRail: React.FC<{
             className="btn btn--primary btn--small"
             style={{ width: '100%', marginBottom: '0.75rem' }}
             onClick={() => setWizardOpen(true)}
-            disabled={state.unsupported}
             data-autoopt-run-optimizer
           >
             ▶ Run optimizer
           </button>
           <p className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-autoopt-announcement>{announcement}</p>
-          {state.unsupported && (
-            <p className="context-rail__notice" data-autoopt-unsupported>This server does not support the llama.cpp tool endpoints — update lemond.</p>
-          )}
-          {state.lastError && !state.unsupported && (
+          {state.lastError && (
             <p className="context-rail__notice preset-error" data-autoopt-rail-error>⚠ {state.lastError}</p>
           )}
           <div className="auto-run-list" data-autoopt-run-list>
-            {state.runs.length === 0 && !state.unsupported && (
+            {state.runs.length === 0 && (
               <p className="context-rail__hint" data-autoopt-empty>No optimization runs yet on this server.</p>
             )}
             {state.runs.map(run => {

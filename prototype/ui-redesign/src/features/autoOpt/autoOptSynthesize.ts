@@ -18,6 +18,13 @@ export function roundDownCtx(ctx: number): number {
   return ctx >= 1024 ? Math.floor(ctx) : 1024;
 }
 
+export function roundUpCtx(ctx: number): number {
+  for (let i = CTX_STEPS.length - 1; i >= 0; i--) {
+    if (CTX_STEPS[i] >= ctx) return CTX_STEPS[i];
+  }
+  return CTX_STEPS[0];
+}
+
 export function kvQuantFactor(q: string): number {
   if (q === 'q8_0') return 0.5;
   if (q === 'q5_1') return 0.375;
@@ -25,68 +32,131 @@ export function kvQuantFactor(q: string): number {
   return 1.0;
 }
 
-export function fitTotalMib(fit: FitEstimate): number {
-  let total = 0;
-  for (const d of fit.devices) {
-    if (!d.device.startsWith('Host')) total += d.model_mib + d.ctx_mib + d.compute_mib;
-  }
-  return total;
+// ── Heuristic memory fit (replaces the fit-params endpoint) ─────────────
+
+const COMPUTE_BASE_MIB = 512;   // llama.cpp compute buffers at default batch
+const MIN_OFFLOAD_CTX = 4096;   // context reserved when weights spill to CPU
+const DEFAULT_KV_BYTES_PER_TOKEN = 131072;  // coarse fallback when metadata is absent
+
+export interface FitInputs {
+  backend: string;
+  availableMib: number;
+  weightsMib: number;
+  kvBytesPerToken: number;   // f16, per token
+  blockCount: number;
+  isMoe: boolean;
+  nCtxTrain: number;
+  degraded: boolean;
 }
 
-function findBench(
-  bench: BenchPoint[],
-  backend: string,
-  depth: number,
-  extraKey?: 'spec_n' | 'b',
-  extraVal = 0,
-): BenchPoint | null {
+export function computeFitEstimate(input: FitInputs): FitEstimate {
+  const kvPerTokenMib = (input.kvBytesPerToken || DEFAULT_KV_BYTES_PER_TOKEN) / (1024 * 1024);
+  const compute = COMPUTE_BASE_MIB;
+  const weights = Math.max(0, input.weightsMib);
+  const available = Math.max(1, input.availableMib);
+  const trained = input.nCtxTrain > 0 ? input.nCtxTrain : 32768;
+
+  const base: FitEstimate = {
+    backend: input.backend,
+    fits_fully: false,
+    fitted_ctx: 0,
+    fitted_ngl: -1,
+    fitted_ncmoe: 0,
+    weights_mib: Math.round(weights),
+    kv_mib: 0,
+    compute_mib: compute,
+    total_mib: 0,
+    available_mib: Math.round(available),
+    degraded: input.degraded,
+    ok: true,
+  };
+
+  // Weights (+ a minimal KV reserve) must fit on the GPU, else we offload.
+  const minKvMib = kvPerTokenMib * MIN_OFFLOAD_CTX;
+  if (weights + compute + minKvMib > available) {
+    base.fits_fully = false;
+    base.fitted_ctx = MIN_OFFLOAD_CTX;
+    const perLayer = weights / Math.max(1, input.blockCount);
+    const weightsBudget = available - compute - minKvMib;
+    const layersOnGpu = Math.max(0, Math.min(input.blockCount, Math.floor(weightsBudget / Math.max(1, perLayer))));
+    if (input.isMoe) {
+      base.fitted_ngl = -1;
+      base.fitted_ncmoe = Math.max(1, Math.min(input.blockCount, input.blockCount - layersOnGpu));
+    } else {
+      base.fitted_ngl = layersOnGpu;
+      base.fitted_ncmoe = 0;
+    }
+    base.kv_mib = Math.round(minKvMib);
+    base.total_mib = Math.round(available);
+    return base;
+  }
+
+  // Weights fit on the GPU. Does the full trained window's KV also fit?
+  base.fits_fully = true;
+  const kvFullMib = kvPerTokenMib * trained;
+  if (weights + compute + kvFullMib <= available) {
+    base.fitted_ctx = 0;
+    base.kv_mib = Math.round(kvFullMib);
+    base.total_mib = Math.round(weights + compute + kvFullMib);
+    return base;
+  }
+  const kvBudget = available - weights - compute;
+  base.fitted_ctx = Math.max(MIN_OFFLOAD_CTX, Math.floor(kvBudget / kvPerTokenMib));
+  base.kv_mib = Math.round(kvBudget);
+  base.total_mib = Math.round(available);
+  return base;
+}
+
+export function fitTotalGb(fit: FitEstimate | null | undefined): number {
+  return fit ? fit.total_mib / 1024 : 0;
+}
+
+// ── Bench readers (new TTFT/TPS measurement shape) ─────────────────────
+
+function representative(bench: BenchPoint[], backend: string): BenchPoint | null {
+  let d0: BenchPoint | null = null;
+  let deep: BenchPoint | null = null;
   for (const p of bench) {
-    if (!p.ok || p.backend !== backend || p.n_depth !== depth) continue;
-    if (extraKey) {
-      if (p.params?.[extraKey] !== extraVal) continue;
-    } else if (p.params?.spec_n !== undefined || p.params?.ladder !== undefined) {
-      continue;
-    }
-    return p;
+    if (!p.ok || p.backend !== backend) continue;
+    if (p.params?.ladder === true || p.params?.spec_n !== undefined) continue;
+    if ((p.params?.d ?? 0) > 0) deep = p;
+    else d0 = p;
   }
-  return null;
+  return deep || d0;
 }
 
-function findFit(fits: FitEstimate[], backend: string, extraArgs = ''): FitEstimate | null {
-  for (const f of fits) {
-    if (f.ok && f.backend === backend && f.extra_args === extraArgs) return f;
-  }
-  return null;
+/**
+ * Backend-duel score. Rewards high decode throughput (tps) and low prefill
+ * latency (ttft), normalized within the duel so the two scales combine. tps is
+ * weighted higher because interactive chat is decode-bound; a candidate that
+ * is best on both scores 1.0.
+ */
+export function benchScore(tps: number, ttftMs: number, tpsMax: number, ttftMin: number): number {
+  const normTps = tpsMax > 0 ? Math.max(0, tps) / tpsMax : 0;
+  const normTtft = (ttftMs > 0 && ttftMin > 0) ? ttftMin / ttftMs : 0;
+  return 0.7 * normTps + 0.3 * normTtft;
 }
 
-function pickBackend(
-  bench: BenchPoint[],
-  candidates: string[],
-): { backend: string; deep: BenchPoint | null } {
-  let best = '';
-  let bestScore = -1;
-  let bestDeep: BenchPoint | null = null;
+function pickBackend(bench: BenchPoint[], candidates: string[]): { backend: string; rep: BenchPoint | null } {
+  const reps: Array<{ backend: string; rep: BenchPoint }> = [];
   for (const c of candidates) {
-    const d0 = findBench(bench, c, 0);
-    if (!d0) continue;
-    let deep: BenchPoint | null = null;
-    for (const bp of bench) {
-      if (bp.ok && bp.backend === c && bp.n_depth > 0
-          && bp.params?.ladder === undefined && bp.params?.spec_n === undefined) {
-        deep = bp;
-      }
-    }
-    const pp0 = d0.pp_avg_ts;
-    const tg = deep ? deep.tg_avg_ts : d0.tg_avg_ts;
-    const ppd = deep ? deep.pp_avg_ts : d0.pp_avg_ts;
-    const score = 0.35 * pp0 + 0.45 * tg * 10 + 0.20 * ppd;
+    const rep = representative(bench, c);
+    if (rep) reps.push({ backend: c, rep });
+  }
+  if (reps.length === 0) return { backend: '', rep: null };
+  const tpsMax = Math.max(...reps.map(r => r.rep.tps), 0);
+  const ttfts = reps.map(r => r.rep.ttft_ms).filter(v => v > 0);
+  const ttftMin = ttfts.length ? Math.min(...ttfts) : 0;
+  let best = reps[0];
+  let bestScore = -1;
+  for (const r of reps) {
+    const score = benchScore(r.rep.tps, r.rep.ttft_ms, tpsMax, ttftMin);
     if (score > bestScore) {
       bestScore = score;
-      best = c;
-      bestDeep = deep || d0;
+      best = r;
     }
   }
-  return { backend: best, deep: best ? bestDeep : null };
+  return { backend: best.backend, rep: best.rep };
 }
 
 export function pickBenchWinner(bench: BenchPoint[], candidates: string[]): string {
@@ -108,33 +178,7 @@ export function checkpointRepoId(checkpoint: string): string {
   return id.includes('/') ? id : '';
 }
 
-/**
- * llama-fit-params only understands memory-relevant llama flags; host-side
- * flags (--cache-ram, --spec-*, --direct-io) make it exit with a usage error,
- * so load validation probes with the memory subset only.
- */
-export function validationFlagSubset(ctxSize: number, llamacppArgs: string): string[] {
-  const memFlags = new Set([
-    '-c', '-ctk', '-ctv', '-np', '-kvu', '-no-kvu', '-b', '-ub',
-    '--cpu-moe', '--n-cpu-moe', '-ngl', '--split-mode', '-sm',
-  ]);
-  const tokens: string[] = ['-c', String(ctxSize)];
-  let takeValue = false;
-  for (const cur of llamacppArgs.split(/\s+/).filter(Boolean)) {
-    if (takeValue) {
-      tokens.push(cur);
-      takeValue = false;
-      continue;
-    }
-    if (memFlags.has(cur)) {
-      tokens.push(cur);
-      takeValue = cur !== '-kvu' && cur !== '-no-kvu' && cur !== '--cpu-moe';
-    }
-  }
-  return tokens;
-}
-
-// ── The 12-lever synthesis (1:1 port of the C++ engine) ────────────────
+// ── Synthesis ──────────────────────────────────────────────────────────
 
 export function synthesize(
   hw: HardwareSnapshot,
@@ -148,15 +192,14 @@ export function synthesize(
     label: 'Recommended',
     llamacpp_backend: '',
     ctx_size: -1,
-    mmproj_enabled: true,
     llamacpp_args: '',
     rationale: [],
   };
   const result: AutoOptResult = { primary: p, alternatives: [] };
   const args: string[] = [];
 
-  // Lever 6 (+3 constraint): backend selection — measured duel when bench
-  // data exists, install-order heuristic otherwise.
+  // Backend selection: measured TTFT/TPS duel when bench data exists,
+  // install-order heuristic otherwise.
   const candidates: string[] = [];
   for (const b of hw.installed_backends) {
     if (b === 'cpu' || b === 'system') continue;
@@ -167,12 +210,13 @@ export function synthesize(
 
   let backend = candidates[0];
   if (candidates.length > 1) {
-    const { backend: measured, deep: bestDeep } = pickBackend(bench, candidates);
+    const { backend: measured, rep } = pickBackend(bench, candidates);
     if (measured) backend = measured;
-    if (bestDeep) {
+    if (rep) {
       const others = candidates.filter(c => c !== backend).join(', ');
-      p.rationale.push(`${backend} chosen over ${others}: best measured decode/prefill balance `
-        + `on this model (${fmt1(bestDeep.tg_avg_ts)} tok/s decode at depth ${bestDeep.n_depth}).`);
+      p.rationale.push(`${backend} chosen over ${others}: best measured throughput/latency balance `
+        + `on this model (${fmt1(rep.tps)} tok/s decode, ${fmt1(rep.ttft_ms)} ms to first token`
+        + `${rep.params?.d ? ` at depth ${rep.params.d}` : ''}).`);
     } else {
       p.rationale.push(`${backend} chosen (first installed GPU backend; enable a benchmark `
         + 'budget to measure alternatives).');
@@ -181,31 +225,17 @@ export function synthesize(
   p.llamacpp_backend = backend;
   const isRocm = backend.startsWith('rocm');
   const isCuda = backend === 'cuda';
+  const fit = fits.find(f => f.ok && f.backend === backend) || fits.find(f => f.ok) || null;
 
-  // Lever 10: mmap is broken on ROCm; direct I/O is the faster workaround.
+  // mmap is broken on ROCm; direct I/O is the faster workaround.
   if (isRocm) {
     args.push('--direct-io');
     p.rationale.push('--direct-io: works around broken mmap on ROCm with faster cold loads '
       + 'than --no-mmap.');
   }
 
-  // Lever 8: vision projector.
-  if (mf.has_vision) {
-    if (ans.use_vision === false) {
-      p.mmproj_enabled = false;
-      let freed = 0;
-      const withMm = findFit(fits, backend);
-      const withoutMm = findFit(fits, backend, '--no-mmproj');
-      if (withMm && withoutMm) freed = fitTotalMib(withMm) - fitTotalMib(withoutMm);
-      p.rationale.push('Vision projector disabled per your answer'
-        + (freed > 0 ? ` — frees ~${freed} MiB for context.` : ' — its memory goes to context instead.'));
-    } else {
-      p.rationale.push('Vision projector kept loaded (image input enabled).');
-    }
-  }
-
-  // Lever 11: fit strategy for models that don't fully fit.
-  const fit = findFit(fits, backend);
+  // Fit strategy for models that don't fully fit on the GPU. The preset must
+  // REPRODUCE the fitted config, so the offload flags are emitted, not narrated.
   let usedCpuMoe = false;
   if (fit && !fit.fits_fully) {
     if (mf.is_moe && fit.fitted_ncmoe > 0) {
@@ -219,13 +249,14 @@ export function synthesize(
       p.rationale.push('Model exceeds GPU memory: all expert tensors on CPU (--cpu-moe); '
         + 'the GPU keeps the non-expert layers.');
     } else if (fit.fitted_ngl >= 0) {
-      p.rationale.push(`Model exceeds GPU memory: llama.cpp will offload ${fit.fitted_ngl} `
-        + 'layers to GPU and run the rest on CPU (expect reduced speed).');
+      args.push(`-ngl ${fit.fitted_ngl}`);
+      p.rationale.push(`Model exceeds GPU memory: ${fit.fitted_ngl} of ${mf.block_count} layers `
+        + 'offloaded to GPU (-ngl), the rest run on CPU (expect reduced speed).');
     }
   }
 
-  // Lever 2 + ctx: KV-cache quantization (user pick is a constraint) and the
-  // largest context that fits under it.
+  // KV-cache quantization (user pick is a constraint) and the largest context
+  // that fits under it.
   const kv = ans.kv_cache_quant;
   if (kv !== 'none') {
     args.push(`-ctk ${kv} -ctv ${kv}`);
@@ -248,10 +279,11 @@ export function synthesize(
     p.rationale.push(`Context ${p.ctx_size}: the model's full trained window fits.`);
   } else {
     p.rationale.push(`Context ${p.ctx_size}: the largest standard size that fits in memory`
-      + (kv !== 'none' ? ' with the quantized KV cache.' : '.'));
+      + (kv !== 'none' ? ' with the quantized KV cache' : '')
+      + (fit?.degraded ? ' (coarse estimate — model metadata was unavailable).' : '.'));
   }
 
-  // Lever 1: prompt-cache checkpoints scale (user pick constrained by the
+  // Prompt-cache checkpoints scale (user pick constrained by the
   // hybrid/recurrent bump).
   let headroom = ans.ram_headroom;
   if (mf.is_hybrid_or_recurrent && headroom === 'disabled') {
@@ -269,7 +301,7 @@ export function synthesize(
         : ' to keep system RAM free.'));
   }
 
-  // Lever 4: parallel slots.
+  // Parallel slots.
   if (ans.parallel && ans.slots > 1) {
     const np = Math.min(Math.max(ans.slots, 2), 8);
     if (ans.dedicated_slots) {
@@ -283,52 +315,54 @@ export function synthesize(
     }
   }
 
-  // Lever 5: speculative decoding.
+  // Speculative decoding.
   args.push('--spec-default');
   p.rationale.push('--spec-default: n-gram speculative decoding is effectively free.');
   if (mf.has_mtp) {
     let bestN = 3;
-    let bestTs = -1;
+    let bestTps = -1;
     for (const bp of bench) {
       if (!bp.ok || bp.params?.spec_n === undefined) continue;
-      if (bp.tg_avg_ts > bestTs) {
-        bestTs = bp.tg_avg_ts;
+      if (bp.tps > bestTps) {
+        bestTps = bp.tps;
         bestN = bp.params.spec_n;
       }
     }
     args.push(`--spec-type draft-mtp --spec-draft-n-max ${bestN}`);
-    p.rationale.push(bestTs > 0
-      ? `MTP draft length ${bestN} measured fastest on this machine (${fmt1(bestTs)} tok/s).`
+    p.rationale.push(bestTps > 0
+      ? `MTP draft length ${bestN} measured fastest on this machine (${fmt1(bestTps)} tok/s).`
       : 'Model has MTP heads: draft-based speculative decoding enabled (default draft length 3).');
   }
 
-  // Lever 9: batch/ubatch ladder for unified-memory boxes with RAM to spare.
+  // Batch/ubatch ladder for unified-memory boxes with RAM to spare. Picks the
+  // batch size with the LOWEST time-to-first-token, gated on a meaningful
+  // improvement over the 512 baseline.
   const bigIgpu = hw.ram_is_vram && hw.host_ram_gb >= 32;
   {
     let bestB = 0;
-    let bestPp = -1;
-    let basePp = -1;
+    let bestTtft = Infinity;
+    let baseTtft = -1;
     for (const bp of bench) {
-      if (!bp.ok || bp.params?.ladder === undefined || bp.backend !== backend || bp.n_depth !== 0) continue;
+      if (!bp.ok || bp.params?.ladder !== true || bp.backend !== backend) continue;
       const b = bp.params.b ?? 0;
-      if (b === 512) basePp = bp.pp_avg_ts;
-      if (bp.pp_avg_ts > bestPp) {
-        bestPp = bp.pp_avg_ts;
+      if (b === 512) baseTtft = bp.ttft_ms;
+      if (bp.ttft_ms > 0 && bp.ttft_ms < bestTtft) {
+        bestTtft = bp.ttft_ms;
         bestB = b;
       }
     }
-    if (bestB > 512 && basePp > 0 && bestPp > basePp * 1.05) {
+    if (bestB > 512 && baseTtft > 0 && bestTtft > 0 && baseTtft / bestTtft > 1.05) {
       args.push(`-b ${bestB} -ub ${bestB}`);
-      p.rationale.push(`Batch size ${bestB} measured ${fmt1((bestPp / basePp - 1) * 100)}% `
+      p.rationale.push(`Batch size ${bestB} measured ${fmt1((baseTtft / bestTtft - 1) * 100)}% `
         + 'faster prefill than the default 512 (costs some memory for compute buffers).');
     } else if (bench.length === 0 && bigIgpu) {
       args.push('-b 2048 -ub 2048');
       p.rationale.push('Batch size 2048: unified-memory machines with ample RAM prefill much '
-        + 'faster with larger batches (heuristic — run a standard/thorough pass to measure).');
+        + 'faster with larger batches (heuristic — run a benchmark pass to measure).');
     }
   }
 
-  // Lever 3: tensor parallelism across identical GPUs (CUDA-only today).
+  // Tensor parallelism across identical GPUs (CUDA-only today).
   if (isCuda) {
     let sameFamily = 0;
     for (let i = 0; i < hw.gpus.length; i++) {
@@ -343,7 +377,7 @@ export function synthesize(
     }
   }
 
-  // Lever 7: sampling defaults pass through (request-time, not load flags).
+  // Sampling defaults pass through (request-time, not load flags).
   result.sampling_defaults = sampling;
   if (sampling) {
     p.rationale.push('Sampling defaults (temperature/top-p/top-k) taken from the base model\'s '
@@ -352,13 +386,15 @@ export function synthesize(
 
   const join = (v: string[]) => v.join(' ');
   p.llamacpp_args = join(args);
-  if (fit) {
-    const d0 = findBench(bench, backend, 0);
-    p.expected = { vram_mib: fitTotalMib(fit) };
-    if (d0) {
-      p.expected.pp_ts = d0.pp_avg_ts;
-      p.expected.tg_ts = d0.tg_avg_ts;
+  {
+    const rep = pickBackend(bench, [backend]).rep;
+    const expected: AutoOptRecommendation['expected'] = {};
+    if (fit) expected.vram_gb = Number(fitTotalGb(fit).toFixed(2));
+    if (rep) {
+      if (rep.tps > 0) expected.tps = rep.tps;
+      if (rep.ttft_ms > 0) expected.ttft_ms = rep.ttft_ms;
     }
+    if (Object.keys(expected).length) p.expected = expected;
   }
 
   // ── Alternatives ───────────────────────────────────────────────────
