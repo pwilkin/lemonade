@@ -25,8 +25,6 @@ type Listener = (state: AutoOptState) => void;
 const STORAGE_PREFIX = 'lemonade_autoopt_runs_v2';
 const MAX_RUNS = 20;
 
-// Runs are scoped to the Lemonade server they were measured on: a run from
-// another server must not leak into — or be applied against — this one.
 function storageKey(): string {
   let base = 'default';
   try { base = api.baseUrl || 'default'; } catch {}
@@ -64,9 +62,7 @@ function coerceStoredRun(raw: unknown): AutoOptRunRecord | null {
     },
   };
   delete coerced.progress;
-  // An active run backed by a server job keeps executing across a reload — the
-  // store re-attaches to it (review #6a). Only a client-side stage (a run with
-  // no job) is truly interrupted by the reload.
+
   if (isAutoOptRunActive(coerced) && !(coerced.job_id && coerced.synth_inputs)) {
     coerced.status = 'failed';
     coerced.error = 'interrupted — the page was closed while the run was active';
@@ -308,8 +304,7 @@ class AutoOptStore {
       try {
         this.persist();
       } catch {
-        // Quota errors on incremental writes must not kill the run; terminal
-        // states retry on the next mutation.
+
       }
     }
   }

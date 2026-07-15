@@ -236,8 +236,6 @@ const PresetManager: React.FC<PresetManagerProps> = ({ loadedModels }) => {
     const onStoreChange = () => {
       const next = loadUserPresets();
       if (JSON.stringify(next) !== JSON.stringify(userPresetsRef.current)) {
-        // A preset written outside this view (AutoOpt "Create preset") should be
-        // discoverable, not buried: flag it for scroll + flash.
         const previousIds = new Set(userPresetsRef.current.map(preset => preset.id));
         const added = next.find(preset => !previousIds.has(preset.id));
         setUserPresets(next);

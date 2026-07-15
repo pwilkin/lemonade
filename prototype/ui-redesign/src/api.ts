@@ -1586,9 +1586,6 @@ class LemonadeAPI {
     return [];
   }
 
-  // ── AutoOpt benchmark orchestration (generic endpoints) ────────
-
-  // ── Server-side job engine ─────────────────────────────────────
 
   async createJob(name: string, steps: unknown[], inputs: Record<string, unknown> = {}): Promise<{ id: string }> {
     return this._json<{ id: string }>('/api/v1/jobs', {

@@ -26,7 +26,6 @@ export interface AutoOptStartRequest {
   answers: AutoOptAnswers;
 }
 
-/** Flat answer shape consumed by the synthesis engine. */
 export interface WizardAnswers {
   parallel: boolean;
   slots: number;
@@ -98,13 +97,6 @@ export interface ModelFacts {
   metadata_present: boolean;
 }
 
-/**
- * Heuristic memory fit computed from model metadata + system-info (no
- * fit-params endpoint). fitted_ctx is the largest f16 context that fits with
- * all weights on GPU (0 = the full trained window fits); fits_fully is whether
- * every layer fits on GPU (ngl = -1). When it doesn't, dense models get a
- * partial -ngl and MoE models get -n-cpu-moe.
- */
 export interface FitEstimate {
   backend: string;
   fits_fully: boolean;
@@ -129,11 +121,6 @@ export interface BenchParams {
   ladder?: boolean;
 }
 
-/**
- * One measured configuration from the coordinated bench methodology (load →
- * chat/completions → read timings/usage). Depth is emulated by priming the
- * request with a long prompt; ttft_ms/tps are the mean of the measured runs.
- */
 export interface BenchPoint {
   backend: string;
   label: string;
@@ -182,11 +169,6 @@ export interface AutoOptMeasurements {
   bench: BenchPoint[];
 }
 
-/**
- * One expected measurement in the bench recipe. buildBenchRecipe emits the
- * recipe steps and this parallel plan; after the job runs the client reads
- * context[ttft_key]/context[tps_key]/context[vram_key] to rebuild BenchPoints.
- */
 export interface BenchPlanEntry {
   label: string;
   backend: string;
@@ -198,11 +180,6 @@ export interface BenchPlanEntry {
   vram_key: string;
 }
 
-/**
- * Everything the client-side synthesize() needs, persisted with the run so a
- * page reload can re-attach to the server job and synthesize once it finishes
- * (the job itself only measures — it does not synthesize).
- */
 export interface SynthInputs {
   hardware: HardwareSnapshot;
   facts: ModelFacts;

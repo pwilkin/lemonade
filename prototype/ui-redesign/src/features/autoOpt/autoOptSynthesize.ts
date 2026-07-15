@@ -32,17 +32,15 @@ export function kvQuantFactor(q: string): number {
   return 1.0;
 }
 
-// ── Heuristic memory fit (replaces the fit-params endpoint) ─────────────
-
-const COMPUTE_BASE_MIB = 512;   // llama.cpp compute buffers at default batch
-const MIN_OFFLOAD_CTX = 4096;   // context reserved when weights spill to CPU
-const DEFAULT_KV_BYTES_PER_TOKEN = 131072;  // coarse fallback when metadata is absent
+const COMPUTE_BASE_MIB = 512;
+const MIN_OFFLOAD_CTX = 4096;
+const DEFAULT_KV_BYTES_PER_TOKEN = 131072;
 
 export interface FitInputs {
   backend: string;
   availableMib: number;
   weightsMib: number;
-  kvBytesPerToken: number;   // f16, per token
+  kvBytesPerToken: number;
   blockCount: number;
   isMoe: boolean;
   nCtxTrain: number;
@@ -71,7 +69,6 @@ export function computeFitEstimate(input: FitInputs): FitEstimate {
     ok: true,
   };
 
-  // Weights (+ a minimal KV reserve) must fit on the GPU, else we offload.
   const minKvMib = kvPerTokenMib * MIN_OFFLOAD_CTX;
   if (weights + compute + minKvMib > available) {
     base.fits_fully = false;
@@ -91,7 +88,6 @@ export function computeFitEstimate(input: FitInputs): FitEstimate {
     return base;
   }
 
-  // Weights fit on the GPU. Does the full trained window's KV also fit?
   base.fits_fully = true;
   const kvFullMib = kvPerTokenMib * trained;
   if (weights + compute + kvFullMib <= available) {
@@ -111,8 +107,6 @@ export function fitTotalGb(fit: FitEstimate | null | undefined): number {
   return fit ? fit.total_mib / 1024 : 0;
 }
 
-// ── Bench readers (new TTFT/TPS measurement shape) ─────────────────────
-
 function representative(bench: BenchPoint[], backend: string): BenchPoint | null {
   let d0: BenchPoint | null = null;
   let deep: BenchPoint | null = null;
@@ -125,12 +119,6 @@ function representative(bench: BenchPoint[], backend: string): BenchPoint | null
   return deep || d0;
 }
 
-/**
- * Backend-duel score. Rewards high decode throughput (tps) and low prefill
- * latency (ttft), normalized within the duel so the two scales combine. tps is
- * weighted higher because interactive chat is decode-bound; a candidate that
- * is best on both scores 1.0.
- */
 export function benchScore(tps: number, ttftMs: number, tpsMax: number, ttftMin: number): number {
   const normTps = tpsMax > 0 ? Math.max(0, tps) / tpsMax : 0;
   const normTtft = (ttftMs > 0 && ttftMin > 0) ? ttftMin / ttftMs : 0;
@@ -167,7 +155,6 @@ function fmt1(v: number): string {
   return v.toFixed(1);
 }
 
-/** "https://huggingface.co/Qwen/Qwen3-32B" or "repo:variant" -> "org/repo" ('' when unresolvable). */
 export function checkpointRepoId(checkpoint: string): string {
   const marker = 'huggingface.co/';
   const pos = checkpoint.indexOf(marker);
@@ -177,8 +164,6 @@ export function checkpointRepoId(checkpoint: string): string {
   if (colon !== -1) id = id.slice(0, colon);
   return id.includes('/') ? id : '';
 }
-
-// ── Synthesis ──────────────────────────────────────────────────────────
 
 export function synthesize(
   hw: HardwareSnapshot,
@@ -198,8 +183,6 @@ export function synthesize(
   const result: AutoOptResult = { primary: p, alternatives: [] };
   const args: string[] = [];
 
-  // Backend selection: measured TTFT/TPS duel when bench data exists,
-  // install-order heuristic otherwise.
   const candidates: string[] = [];
   for (const b of hw.installed_backends) {
     if (b === 'cpu' || b === 'system') continue;
@@ -227,15 +210,12 @@ export function synthesize(
   const isCuda = backend === 'cuda';
   const fit = fits.find(f => f.ok && f.backend === backend) || fits.find(f => f.ok) || null;
 
-  // mmap is broken on ROCm; direct I/O is the faster workaround.
   if (isRocm) {
     args.push('--direct-io');
     p.rationale.push('--direct-io: works around broken mmap on ROCm with faster cold loads '
       + 'than --no-mmap.');
   }
 
-  // Fit strategy for models that don't fully fit on the GPU. The preset must
-  // REPRODUCE the fitted config, so the offload flags are emitted, not narrated.
   let usedCpuMoe = false;
   if (fit && !fit.fits_fully) {
     if (mf.is_moe && fit.fitted_ncmoe > 0) {
@@ -255,8 +235,6 @@ export function synthesize(
     }
   }
 
-  // KV-cache quantization (user pick is a constraint) and the largest context
-  // that fits under it.
   const kv = ans.kv_cache_quant;
   if (kv !== 'none') {
     args.push(`-ctk ${kv} -ctv ${kv}`);
@@ -283,8 +261,6 @@ export function synthesize(
       + (fit?.degraded ? ' (coarse estimate — model metadata was unavailable).' : '.'));
   }
 
-  // Prompt-cache checkpoints scale (user pick constrained by the
-  // hybrid/recurrent bump).
   let headroom = ans.ram_headroom;
   if (mf.is_hybrid_or_recurrent && headroom === 'disabled') {
     headroom = 'minimal';
@@ -301,7 +277,6 @@ export function synthesize(
         : ' to keep system RAM free.'));
   }
 
-  // Parallel slots.
   if (ans.parallel && ans.slots > 1) {
     const np = Math.min(Math.max(ans.slots, 2), 8);
     if (ans.dedicated_slots) {
@@ -315,7 +290,6 @@ export function synthesize(
     }
   }
 
-  // Speculative decoding.
   args.push('--spec-default');
   p.rationale.push('--spec-default: n-gram speculative decoding is effectively free.');
   if (mf.has_mtp) {
@@ -334,9 +308,6 @@ export function synthesize(
       : 'Model has MTP heads: draft-based speculative decoding enabled (default draft length 3).');
   }
 
-  // Batch/ubatch ladder for unified-memory boxes with RAM to spare. Picks the
-  // batch size with the LOWEST time-to-first-token, gated on a meaningful
-  // improvement over the 512 baseline.
   const bigIgpu = hw.ram_is_vram && hw.host_ram_gb >= 32;
   {
     let bestB = 0;
@@ -362,7 +333,6 @@ export function synthesize(
     }
   }
 
-  // Tensor parallelism across identical GPUs (CUDA-only today).
   if (isCuda) {
     let sameFamily = 0;
     for (let i = 0; i < hw.gpus.length; i++) {
@@ -377,7 +347,6 @@ export function synthesize(
     }
   }
 
-  // Sampling defaults pass through (request-time, not load flags).
   result.sampling_defaults = sampling;
   if (sampling) {
     p.rationale.push('Sampling defaults (temperature/top-p/top-k) taken from the base model\'s '
@@ -397,7 +366,6 @@ export function synthesize(
     if (Object.keys(expected).length) p.expected = expected;
   }
 
-  // ── Alternatives ───────────────────────────────────────────────────
   if (kv !== 'none') {
     const alt: AutoOptRecommendation = {
       ...p,

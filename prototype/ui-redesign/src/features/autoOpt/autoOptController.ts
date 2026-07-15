@@ -213,8 +213,6 @@ async function fetchSamplingDefaults(base: string, signal: AbortSignal): Promise
   return null;
 }
 
-// ── Job → measurement mapping ──────────────────────────────────────────
-
 function benchPointsFromContext(plan: BenchPlanEntry[], context: Record<string, unknown>): BenchPoint[] {
   return plan.map(entry => {
     const ttft = Number(context[entry.ttft_key]);
@@ -312,8 +310,6 @@ async function finishBenchJob(
     + (result.primary.llamacpp_args ? ` · ${result.primary.llamacpp_args}` : '');
   return { result, summary };
 }
-
-// ── Fresh run: client prep → fit → (job) → synthesize ──────────────────
 
 export async function executeAutoOptRun(
   request: AutoOptStartRequest,
@@ -425,7 +421,6 @@ export async function executeAutoOptRun(
 
   const primaryFit = fits.find(f => f.ok && f.backend === candidates[0]) || fits[0] || null;
 
-  // ── Fast Scan: heuristic only, no job. ──────────────────────────────
   if (!withBench) {
     cb.stage('bench_job', 'skipped');
     let result: AutoOptResult | null = null;
@@ -442,7 +437,6 @@ export async function executeAutoOptRun(
     return { result: result!, summary };
   }
 
-  // ── Benchmark tiers: build recipe, run it as a server job. ──────────
   const recipe = buildBenchRecipe(primaryFit, answers, hardware, modelFacts, request.model, request.budget, candidates);
   const synth: SynthInputs = {
     hardware, facts: modelFacts, fits, sampling,
@@ -456,8 +450,6 @@ export async function executeAutoOptRun(
 
   return finishBenchJob(jobId, synth, request, cb, signal);
 }
-
-// ── Reload re-attach: resume polling an in-flight server job (#6a). ─────
 
 export async function resumeAutoOptRun(
   run: AutoOptRunRecord,

@@ -92,7 +92,6 @@ export interface ModelTuning {
   sampling: SamplingParams;
   /** Optional runtime hint kept separate from shared Preset intent. */
   engine_hint?: PresetRecipe;
-  /** 'model' means discovered from model metadata/GGUF; 'user' means locally customized; 'optimized' means written by an AutoOpt run. */
   source?: 'model' | 'user' | 'optimized';
   auto_opt_run_id?: string;
   updated_at?: string;

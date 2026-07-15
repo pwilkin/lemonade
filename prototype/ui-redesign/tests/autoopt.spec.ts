@@ -40,7 +40,6 @@ const SYSTEM_INFO = {
   },
 };
 
-// Synthetic TTFT/TPS/VRAM keyed on the measurement key the recipe emits.
 function metricsForKey(measKey: string): { ttft: number; tps: number; vram: number } {
   let m = /^ladder_b(\d+)$/.exec(measKey);
   if (m) { const b = Number(m[1]); return { ttft: b === 2048 ? 70 : (b === 8192 ? 80 : 100), tps: 40, vram: 20 }; }
@@ -87,8 +86,8 @@ interface MockCounts {
 
 interface MockOptions {
   loadedModels?: Array<Record<string, unknown>>;
-  jobRunningPolls?: number;   // GETs that report `running` before `completed`
-  jobFails?: boolean;         // the job ends `failed` with an error step
+  jobRunningPolls?: number;
+  jobFails?: boolean;
   loadHandler?: (body: Record<string, unknown>) => { status?: number; json?: unknown } | null;
 }
 
@@ -97,7 +96,6 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
   const loaded = options.loadedModels || [];
   const runningPolls = options.jobRunningPolls ?? 0;
 
-  // job id -> { steps, polls }
   const jobs = new Map<string, { steps: Array<Record<string, unknown>>; polls: number }>();
   let jobSeq = 0;
 
@@ -131,7 +129,6 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
     return route.fulfill({ json: { choices: [{ message: { role: 'assistant', content: 'ok' } }] } });
   });
 
-  // ── Job engine ────────────────────────────────────────────────────
   await page.route('**/api/v1/jobs', async route => {
     if (route.request().method() !== 'POST') return route.fulfill({ json: { jobs: [] } });
     const body = route.request().postDataJSON() as Record<string, unknown>;
@@ -156,8 +153,7 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
     const entry = jobs.get(id) || { steps: [], polls: 0 };
     if (!jobs.has(id)) jobs.set(id, entry);
     entry.polls += 1;
-    // A re-attached job (seeded, not POSTed here) has no captured steps; fall
-    // back to the depth-0 duel keys so synthesize still has measurements.
+
     const measKeys = entry.steps.length ? measKeysFromSteps(entry.steps) : ['vulkan_d0', 'rocm_d0'];
     const stepIds: string[] = entry.steps.length
       ? entry.steps.map(s => String(s.id))
@@ -287,10 +283,10 @@ async function openWizard(page: Page) {
 
 async function walkToBudget(page: Page, model = CHAT_MODEL) {
   await page.locator('[data-autoopt-model-select]').selectOption(model);
-  await page.locator('[data-autoopt-next]').click(); // parallel
-  await page.locator('[data-autoopt-next]').click(); // kv
-  await page.locator('[data-autoopt-next]').click(); // ram
-  await page.locator('[data-autoopt-next]').click(); // budget
+  await page.locator('[data-autoopt-next]').click();
+  await page.locator('[data-autoopt-next]').click();
+  await page.locator('[data-autoopt-next]').click();
+  await page.locator('[data-autoopt-next]').click();
   await expect(page.locator('[data-autoopt-step="budget"]')).toBeVisible();
 }
 
@@ -330,7 +326,6 @@ test.describe('AutoOpt wizard + server-side bench job', () => {
     await expect(run.locator('.autoopt-status-chip--completed')).toBeVisible();
     await expect(page.locator('[data-autoopt-announcement]')).toContainText(`AutoOpt run for ${CHAT_MODEL} completed.`);
 
-    // The controller built and POSTed exactly one bench recipe...
     expect(counts.jobs).toHaveLength(1);
     const recipe = counts.jobs[0] as { inputs: Record<string, unknown>; definition: { steps: Array<Record<string, unknown>> } };
     const steps = recipe.definition.steps;
@@ -338,25 +333,24 @@ test.describe('AutoOpt wizard + server-side bench job', () => {
     expect(ops.has('load')).toBe(true);
     expect(ops.has('chat')).toBe(true);
     expect(ops.has('unload')).toBe(true);
-    // ...loading both backends...
+
     const loadBackends = new Set(steps.filter(s => s.op === 'load').map(s => (s.params as any)?.llamacpp_backend));
     expect(loadBackends.has('vulkan')).toBe(true);
     expect(loadBackends.has('rocm')).toBe(true);
-    // ...timing chats that extract TTFT/TPS into named context keys...
+
     const extractKeys = steps.flatMap(s => Object.keys((s.extract as Record<string, string>) || {}));
     expect(extractKeys.some(k => k.endsWith('_ttft'))).toBe(true);
     expect(extractKeys.some(k => k.endsWith('_tps'))).toBe(true);
-    // ...at depth 0 and deep context, plus the batch ladder rungs...
+
     expect(extractKeys).toEqual(expect.arrayContaining(['vulkan_d0_tps', 'vulkan_d30000_tps', 'ladder_b512_ttft', 'ladder_b2048_ttft', 'ladder_b8192_ttft']));
-    // ...with a memory-heavy load that falls back to a smaller context (test-by-failure).
+
     const fallbackLoad = steps.find(s => s.op === 'load' && typeof s.on_fail === 'string' && String(s.on_fail).startsWith('loadlo_'));
     expect(fallbackLoad).toBeTruthy();
     expect(steps.some(s => String(s.id).startsWith('loadlo_'))).toBe(true);
-    // The client never drove load/chat/unload directly for the bench.
+
     expect(counts.load).toHaveLength(0);
     expect(counts.chat).toHaveLength(0);
 
-    // Synthesis reflects the job's measurements: vulkan won, b2048 (lowest TTFT) chosen.
     await page.locator('[data-autoopt-inspect]').click();
     await page.waitForSelector('[data-autoopt-detail]');
     const args = page.locator('[data-autoopt-rec-args]');
@@ -392,10 +386,10 @@ test.describe('AutoOpt wizard + server-side bench job', () => {
     }]);
 
     await openPresets(page);
-    // It re-attaches: the run stays running (not marked interrupted)...
+
     const run = page.locator('[data-autoopt-run="ao-reattach"]');
     await expect(run.locator('.autoopt-status-chip--running')).toBeVisible();
-    // ...then the polled job completes and the client synthesizes.
+
     await expect(run.locator('.autoopt-status-chip--completed')).toBeVisible({ timeout: 15000 });
     await page.locator('[data-autoopt-inspect="ao-reattach"]').click();
     await page.waitForSelector('[data-autoopt-detail]');

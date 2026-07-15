@@ -81,8 +81,6 @@ const AutoOptWizard: React.FC<{
   const [runId, setRunId] = useState<string | null>(null);
   const [storeState, setStoreState] = useState<AutoOptState>(() => autoOptStore.snapshot());
   const slideoverRef = useRef<HTMLElement>(null);
-  // system-info can take seconds on a cold server; its RAM suggestion must
-  // never overwrite a headroom level the user has already picked.
   const ramTouchedRef = useRef(false);
 
   useFocusTrap(slideoverRef, open);

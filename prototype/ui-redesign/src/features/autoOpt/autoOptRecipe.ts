@@ -62,8 +62,6 @@ export function buildBenchRecipe(
 
   const measurements: Measurement[] = [];
 
-  // Backend duel at each depth. The depth-0 load probes the memory-heavy full
-  // context (capped) with a test-by-failure fallback to a small context.
   for (const backend of candidates) {
     for (const depth of depths) {
       const primary = depth <= 0 ? Math.min(MAX_BENCH_CTX, roundUpCtx(effectiveCtx)) : ctxForDepth(depth);
@@ -82,7 +80,6 @@ export function buildBenchRecipe(
 
   const winner = candidates[0] || 'vulkan';
 
-  // Batch/ubatch ladder on unified-memory machines.
   if (hardware.ram_is_vram && hardware.host_ram_gb >= 32) {
     const rungs = budget === 'thorough' ? [512, 1024, 2048, 4096, 8192] : [512, 2048, 8192];
     for (const r of rungs) {
@@ -99,7 +96,6 @@ export function buildBenchRecipe(
     }
   }
 
-  // MTP draft-length sweep — each n is its own reloaded config.
   if (facts.has_mtp) {
     const ns = budget === 'thorough' ? [1, 2, 3, 4, 5, 6] : [2, 3, 4];
     for (const n of ns) {
