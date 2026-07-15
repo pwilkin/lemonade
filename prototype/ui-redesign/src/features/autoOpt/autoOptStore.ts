@@ -1,12 +1,15 @@
 import api from '../../api';
 import {
   AUTOOPT_STAGES,
+  ControllerOutcome,
   executeAutoOptRun,
+  resumeAutoOptRun,
 } from './autoOptController';
 import {
   AutoOptRunRecord,
   AutoOptStage,
   AutoOptStartRequest,
+  SynthInputs,
   isAutoOptRunActive,
 } from './autoOptTypes';
 
@@ -61,7 +64,10 @@ function coerceStoredRun(raw: unknown): AutoOptRunRecord | null {
     },
   };
   delete coerced.progress;
-  if (isAutoOptRunActive(coerced)) {
+  // An active run backed by a server job keeps executing across a reload — the
+  // store re-attaches to it (review #6a). Only a client-side stage (a run with
+  // no job) is truly interrupted by the reload.
+  if (isAutoOptRunActive(coerced) && !(coerced.job_id && coerced.synth_inputs)) {
     coerced.status = 'failed';
     coerced.error = 'interrupted — the page was closed while the run was active';
     coerced.finished_at = coerced.finished_at || isoNow();
@@ -121,6 +127,20 @@ class AutoOptStore {
   private controllers = new Map<string, AbortController>();
   private progressDetail = new Map<string, string>();
 
+  constructor() {
+    this.reattachActiveRuns();
+  }
+
+  private reattachActiveRuns(): void {
+    for (const run of this.state.runs) {
+      if (!isAutoOptRunActive(run) || !run.job_id || !run.synth_inputs) continue;
+      if (this.controllers.has(run.id)) continue;
+      const controller = new AbortController();
+      this.controllers.set(run.id, controller);
+      void this.runController(run.id, controller, cb => resumeAutoOptRun(run, cb, controller.signal));
+    }
+  }
+
   snapshot(): AutoOptState {
     return this.state;
   }
@@ -165,44 +185,51 @@ class AutoOptStore {
 
     const controller = new AbortController();
     this.controllers.set(run.id, controller);
-    void this.execute(run.id, request, controller);
+    void this.runController(run.id, controller, cb => executeAutoOptRun(request, controller.signal, cb));
     return run.id;
   }
 
-  private async execute(runId: string, request: AutoOptStartRequest, controller: AbortController): Promise<void> {
+  private async runController(
+    runId: string,
+    controller: AbortController,
+    run: (cb: Parameters<typeof executeAutoOptRun>[2]) => Promise<ControllerOutcome>,
+  ): Promise<void> {
     const callbacks = {
       stage: (name: string, status: AutoOptStage['status'], patch?: Partial<AutoOptStage>) => {
-        this.updateRun(runId, run => {
-          const stages = run.stages.some(stage => stage.name === name)
-            ? run.stages.map(stage => stage.name === name
+        this.updateRun(runId, r => {
+          const stages = r.stages.some(stage => stage.name === name)
+            ? r.stages.map(stage => stage.name === name
               ? { ...stage, ...patch, status, ...(patch?.data ? { data: { ...(stage.data || {}), ...patch.data } } : {}) }
               : stage)
-            : [...run.stages, { name, status, ...patch }];
-          const next = { ...run, stages };
+            : [...r.stages, { name, status, ...patch }];
+          const next = { ...r, stages };
           next.progress = runProgress(next, this.progressDetail.get(runId));
           return next;
         });
       },
       progress: (detail: string) => {
         this.progressDetail.set(runId, detail);
-        this.updateRun(runId, run => ({ ...run, progress: runProgress(run, detail) }), false);
+        this.updateRun(runId, r => ({ ...r, progress: runProgress(r, detail) }), false);
       },
       fit: (estimate: AutoOptRunRecord['measurements']['fit'][number]) => {
-        this.updateRun(runId, run => ({
-          ...run,
-          measurements: { ...run.measurements, fit: [...run.measurements.fit, estimate] },
+        this.updateRun(runId, r => ({
+          ...r,
+          measurements: { ...r.measurements, fit: [...r.measurements.fit, estimate] },
         }));
       },
       bench: (points: AutoOptRunRecord['measurements']['bench']) => {
-        this.updateRun(runId, run => ({
-          ...run,
-          measurements: { ...run.measurements, bench: [...run.measurements.bench, ...points] },
+        this.updateRun(runId, r => ({
+          ...r,
+          measurements: { ...r.measurements, bench: points },
         }));
+      },
+      jobCreated: (jobId: string, synthInputs: SynthInputs) => {
+        this.updateRun(runId, r => ({ ...r, job_id: jobId, synth_inputs: synthInputs }));
       },
     };
 
     try {
-      const outcome = await executeAutoOptRun(request, controller.signal, callbacks);
+      const outcome = await run(callbacks);
       this.updateRun(runId, run => {
         const next: AutoOptRunRecord = {
           ...run,
@@ -235,6 +262,8 @@ class AutoOptStore {
   }
 
   cancelRun(id: string): void {
+    const run = this.state.runs.find(candidate => candidate.id === id);
+    if (run?.job_id) void api.interruptJob(run.job_id).catch(() => {});
     const controller = this.controllers.get(id);
     if (!controller) return;
     const pendingCancel = new Set(this.state.pendingCancel);
@@ -249,6 +278,7 @@ class AutoOptStore {
     if (isAutoOptRunActive(run)) {
       throw new Error('run is still active — cancel it before deleting');
     }
+    if (run.job_id) void api.deleteJob(run.job_id).catch(() => {});
     const previousRuns = this.state.runs;
     const previousActiveRunId = this.state.activeRunId;
     this.setState({

@@ -355,6 +355,28 @@ export interface SlotTimings {
   predicted_per_second: number;
 }
 
+export type JobStatus = 'queued' | 'running' | 'paused' | 'interrupted' | 'completed' | 'failed';
+
+export interface JobStep {
+  id: string;
+  op: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | string;
+  duration_ms?: number;
+  error?: string;
+  output?: unknown;
+}
+
+export interface JobRecord {
+  id: string;
+  name: string;
+  status: JobStatus;
+  inputs?: Record<string, unknown>;
+  context: Record<string, unknown>;
+  cursor?: string;
+  steps: JobStep[];
+  created_at?: string;
+}
+
 export interface SlotData {
   id: number;
   n_ctx: number;
@@ -1566,41 +1588,43 @@ class LemonadeAPI {
 
   // ── AutoOpt benchmark orchestration (generic endpoints) ────────
 
-  /**
-   * Load a model with an EXACT recipe-options body, bypassing preset staging.
-   * Used by the AutoOpt controller's bench/load-test methodology so the measured
-   * configuration is precisely the one requested (mirrors `lemonade bench`).
-   * A non-200 reply throws — a load failure is a first-class benchmark signal.
-   */
-  async benchLoadModel(
-    modelName: string,
-    options: { backend?: string; ctx_size: number; llamacpp_args?: string },
-    signal?: AbortSignal,
-  ): Promise<unknown> {
-    const body: Record<string, unknown> = {
-      model_name: modelName,
-      save_options: false,
-      merge_args: false,
-      ctx_size: options.ctx_size,
-      llamacpp_args: options.llamacpp_args || '',
-    };
-    if (options.backend) body.llamacpp_backend = options.backend;
-    const result = await this._json('/api/v1/load', { method: 'POST', body, signal } as LemonadeRequestInit);
-    this._notifyModelsChanged();
-    return result;
+  // ── Server-side job engine ─────────────────────────────────────
+
+  async createJob(name: string, steps: unknown[], inputs: Record<string, unknown> = {}): Promise<{ id: string }> {
+    return this._json<{ id: string }>('/api/v1/jobs', {
+      method: 'POST',
+      body: { name, definition: { steps }, inputs },
+    });
   }
 
-  async chatCompletionRaw(
-    model: string,
-    messages: ChatMessage[],
-    params: Record<string, unknown> = {},
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
-    return this._json<Record<string, unknown>>('/api/v1/chat/completions', {
-      method: 'POST',
-      body: { model, messages, stream: false, ...params },
+  async getJob(id: string, signal?: AbortSignal): Promise<JobRecord> {
+    return this._json<JobRecord>(`/api/v1/jobs/${encodeURIComponent(id)}`, {
+      cache: 'no-store',
       signal,
     } as LemonadeRequestInit);
+  }
+
+  async listJobs(): Promise<JobRecord[]> {
+    const data = await this._json<unknown>('/api/v1/jobs', { cache: 'no-store' } as LemonadeRequestInit);
+    if (Array.isArray(data)) return data as JobRecord[];
+    if (isObject(data) && Array.isArray(data.jobs)) return data.jobs as JobRecord[];
+    return [];
+  }
+
+  async interruptJob(id: string): Promise<void> {
+    await this._fetch(`/api/v1/jobs/${encodeURIComponent(id)}/interrupt`, { method: 'POST' });
+  }
+
+  async pauseJob(id: string): Promise<void> {
+    await this._fetch(`/api/v1/jobs/${encodeURIComponent(id)}/pause`, { method: 'POST' });
+  }
+
+  async resumeJob(id: string): Promise<void> {
+    await this._fetch(`/api/v1/jobs/${encodeURIComponent(id)}/resume`, { method: 'POST' });
+  }
+
+  async deleteJob(id: string): Promise<void> {
+    await this._fetch(`/api/v1/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
   async controlDownload(downloadId: string, action: 'pause' | 'cancel' | 'remove'): Promise<unknown> {

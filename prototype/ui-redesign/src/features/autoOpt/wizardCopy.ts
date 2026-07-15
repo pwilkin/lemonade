@@ -1,7 +1,7 @@
 import type { AutoOptBudget, AutoOptKvCacheQuant, AutoOptParallelMode, AutoOptRamHeadroom } from './autoOptTypes';
 
 export const WIZARD_TITLE = 'Optimize this model';
-export const WIZARD_INTRO = 'AutoOpt benchmarks this model on your hardware — right here in your browser, coordinating loads and short completions on the server — and recommends the fastest safe configuration. Answer a few questions so it optimizes for how you actually use it.';
+export const WIZARD_INTRO = 'AutoOpt benchmarks this model on your hardware and recommends the fastest safe configuration. The benchmark runs as a job on the server — you can close this window or reload the page and it keeps going. Answer a few questions so it optimizes for how you actually use it.';
 
 export const MODEL_STEP = {
   legend: 'Which model should be optimized?',
@@ -103,7 +103,7 @@ export const BUDGET_STEP = {
     {
       value: 'standard' as AutoOptBudget,
       label: 'Benchmark',
-      description: 'Loads and times each candidate: a backend duel at depth 0 and at deep context (~30k tokens), a batch ladder on unified-memory machines, an MTP sweep {2,3,4} where supported, and a final load test of the recommendation. (~5–15 min)',
+      description: 'A server job loads and times each candidate: a backend duel at depth 0 and at deep context (~30k tokens), a batch ladder on unified-memory machines, and an MTP sweep {2,3,4} where supported. A memory-heavy load that fails falls back to a smaller context. (~5–15 min)',
     },
     {
       value: 'thorough' as AutoOptBudget,
@@ -114,7 +114,7 @@ export const BUDGET_STEP = {
   networkLabel: 'Allow fetching model metadata from Hugging Face',
   networkHelp: "Only the base model's metadata and generation_config.json are fetched from Hugging Face. Nothing else is downloaded.",
   consentLabel: 'AutoOpt may unload the models currently loaded on this server while it benchmarks',
-  consentHelp: 'Benchmarking needs exclusive access to the hardware: it repeatedly unloads and reloads the model to clear the prompt cache between timed runs. Loaded models are evicted during the run and are not reloaded automatically. Fast Scan runs no benchmarks and never unloads anything.',
+  consentHelp: 'The benchmark job needs exclusive access to the hardware: it repeatedly unloads and reloads the model to clear the prompt cache between timed runs, and normal inference queues behind it until it finishes. Loaded models are evicted during the run and are not reloaded automatically. Fast Scan runs no benchmarks and never unloads anything.',
 };
 
 export const REVIEW_STEP = {
@@ -123,7 +123,7 @@ export const REVIEW_STEP = {
 };
 
 export const RUNNING_STEP = {
-  closeNote: 'You can close this — the run continues on the server and stays in the AutoOpt rail.',
+  closeNote: 'You can close this window or reload the page — the benchmark keeps running on the server and this view re-attaches to it.',
 };
 
 export const KV_QUANT_LABELS: Record<AutoOptKvCacheQuant, string> = {

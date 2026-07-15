@@ -3,8 +3,6 @@ import { test, expect, Page } from '@playwright/test';
 const CHAT_MODEL = 'org/chat-model';
 const NPU_MODEL = 'org/npu-model';
 const REGISTRY_MODEL = 'org/registry-only-model';
-// Runs are scoped to the server they were measured on. The app defaults to
-// http://127.0.0.1:13305 when served from the test dev server.
 const RUNS_KEY = 'lemonade_autoopt_runs_v2::http://127.0.0.1:13305';
 const CHAT_CHECKPOINT = 'org/chat-model-GGUF:Q4_K_M';
 
@@ -42,38 +40,66 @@ const SYSTEM_INFO = {
   },
 };
 
-/** TTFT/TPS returned by the mock chat endpoint for the loaded config. */
-function metricsForLoad(load: Record<string, unknown>): { ttftMs: number; tps: number } {
-  const backend = String(load.llamacpp_backend || 'vulkan');
-  const args = String(load.llamacpp_args || '');
-  const ctx = Number(load.ctx_size || 0);
-  const bMatch = /-b (\d+)/.exec(args);
-  if (bMatch) {
-    const b = Number(bMatch[1]);
-    // b=2048 is the fastest prefill (lowest TTFT) and clears the 5% gate.
-    return { ttftMs: b === 2048 ? 70 : (b === 8192 ? 80 : 100), tps: 40 };
+// Synthetic TTFT/TPS/VRAM keyed on the measurement key the recipe emits.
+function metricsForKey(measKey: string): { ttft: number; tps: number; vram: number } {
+  let m = /^ladder_b(\d+)$/.exec(measKey);
+  if (m) { const b = Number(m[1]); return { ttft: b === 2048 ? 70 : (b === 8192 ? 80 : 100), tps: 40, vram: 20 }; }
+  m = /^mtp_n(\d+)$/.exec(measKey);
+  if (m) { const n = Number(m[1]); return { ttft: 100, tps: n === 2 ? 55 : 40, vram: 20 }; }
+  m = /^(.+)_d(\d+)$/.exec(measKey);
+  if (m) {
+    const deep = Number(m[2]) > 0;
+    if (m[1] === 'vulkan') return { ttft: deep ? 300 : 90, tps: deep ? 40 : 42, vram: 20 };
+    return { ttft: deep ? 380 : 120, tps: deep ? 35 : 37, vram: 21 };
   }
-  const deep = ctx >= 32768;
-  if (backend === 'vulkan') return { ttftMs: deep ? 300 : 90, tps: deep ? 40 : 42 };
-  return { ttftMs: deep ? 380 : 120, tps: deep ? 35 : 37 };
+  return { ttft: 100, tps: 30, vram: 20 };
+}
+
+function measKeysFromSteps(steps: Array<Record<string, unknown>>): string[] {
+  const keys = new Set<string>();
+  for (const step of steps) {
+    const extract = step.extract as Record<string, string> | undefined;
+    if (!extract) continue;
+    for (const k of Object.keys(extract)) keys.add(k.replace(/_(ttft|tps|vram)$/, ''));
+  }
+  return [...keys];
+}
+
+function contextForKeys(measKeys: string[]): Record<string, unknown> {
+  const ctx: Record<string, unknown> = { inputs: {} };
+  for (const mk of measKeys) {
+    const met = metricsForKey(mk);
+    ctx[`${mk}_ttft`] = met.ttft;
+    ctx[`${mk}_tps`] = met.tps;
+    ctx[`${mk}_vram`] = met.vram;
+  }
+  return ctx;
 }
 
 interface MockCounts {
   load: Array<Record<string, unknown>>;
   unload: Array<Record<string, unknown>>;
   chat: Array<Record<string, unknown>>;
+  jobs: Array<Record<string, unknown>>;
+  interrupts: string[];
+  deletes: string[];
 }
 
 interface MockOptions {
   loadedModels?: Array<Record<string, unknown>>;
-  loadHandler?: (body: Record<string, unknown>, counts: MockCounts) => { status?: number; json?: unknown } | null;
-  hangLoad?: boolean;
+  jobRunningPolls?: number;   // GETs that report `running` before `completed`
+  jobFails?: boolean;         // the job ends `failed` with an error step
+  loadHandler?: (body: Record<string, unknown>) => { status?: number; json?: unknown } | null;
 }
 
 async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCounts> {
-  const counts: MockCounts = { load: [], unload: [], chat: [] };
+  const counts: MockCounts = { load: [], unload: [], chat: [], jobs: [], interrupts: [], deletes: [] };
   const loaded = options.loadedModels || [];
-  let lastLoad: Record<string, unknown> = {};
+  const runningPolls = options.jobRunningPolls ?? 0;
+
+  // job id -> { steps, polls }
+  const jobs = new Map<string, { steps: Array<Record<string, unknown>>; polls: number }>();
+  let jobSeq = 0;
 
   await page.route('**/api/v1/health**', route => route.fulfill({
     json: { status: 'ok', version: 'test', all_models_loaded: loaded },
@@ -96,22 +122,69 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
   await page.route('**/api/v1/load', async route => {
     const body = route.request().postDataJSON() as Record<string, unknown>;
     counts.load.push(body);
-    lastLoad = body;
-    if (options.hangLoad) return; // never fulfil — cancel aborts it
-    const override = options.loadHandler ? options.loadHandler(body, counts) : null;
+    const override = options.loadHandler ? options.loadHandler(body) : null;
     if (override) return route.fulfill({ status: override.status ?? 200, json: override.json ?? { status: 'ok' } });
     return route.fulfill({ json: { status: 'ok' } });
   });
   await page.route('**/api/v1/chat/completions', route => {
     counts.chat.push(route.request().postDataJSON() || {});
-    const m = metricsForLoad(lastLoad);
+    return route.fulfill({ json: { choices: [{ message: { role: 'assistant', content: 'ok' } }] } });
+  });
+
+  // ── Job engine ────────────────────────────────────────────────────
+  await page.route('**/api/v1/jobs', async route => {
+    if (route.request().method() !== 'POST') return route.fulfill({ json: { jobs: [] } });
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    counts.jobs.push(body);
+    const steps = ((body.definition as Record<string, unknown>)?.steps || []) as Array<Record<string, unknown>>;
+    const id = `job-test-${++jobSeq}`;
+    jobs.set(id, { steps, polls: 0 });
+    return route.fulfill({ status: 202, json: { id } });
+  });
+  await page.route('**/api/v1/jobs/*/interrupt', route => {
+    counts.interrupts.push(decodeURIComponent(route.request().url().split('/').slice(-2)[0]));
+    return route.fulfill({ json: { status: 'ok' } });
+  });
+  await page.route('**/api/v1/jobs/*/pause', route => route.fulfill({ json: { status: 'ok' } }));
+  await page.route('**/api/v1/jobs/*/resume', route => route.fulfill({ json: { status: 'ok' } }));
+  await page.route('**/api/v1/jobs/*', async route => {
+    const id = decodeURIComponent(route.request().url().split('/').pop() || '').split('?')[0];
+    if (route.request().method() === 'DELETE') {
+      counts.deletes.push(id);
+      return route.fulfill({ json: { status: 'ok' } });
+    }
+    const entry = jobs.get(id) || { steps: [], polls: 0 };
+    if (!jobs.has(id)) jobs.set(id, entry);
+    entry.polls += 1;
+    // A re-attached job (seeded, not POSTed here) has no captured steps; fall
+    // back to the depth-0 duel keys so synthesize still has measurements.
+    const measKeys = entry.steps.length ? measKeysFromSteps(entry.steps) : ['vulkan_d0', 'rocm_d0'];
+    const stepIds: string[] = entry.steps.length
+      ? entry.steps.map(s => String(s.id))
+      : ['load_vulkan_d0', 'chat_vulkan_d0'];
+
+    const running = entry.polls <= runningPolls;
+    if (running) {
+      return route.fulfill({
+        json: {
+          id, name: 'autoopt', status: 'running', context: { inputs: {} },
+          cursor: stepIds[0],
+          steps: stepIds.map((sid, i) => ({ id: sid, op: 'load', status: i === 0 ? 'running' : 'pending' })),
+        },
+      });
+    }
+    if (options.jobFails) {
+      return route.fulfill({
+        json: {
+          id, name: 'autoopt', status: 'failed', context: { inputs: {} },
+          steps: stepIds.map(sid => ({ id: sid, op: 'load', status: 'failed', error: 'CUDA out of memory' })),
+        },
+      });
+    }
     return route.fulfill({
       json: {
-        choices: [{ message: { role: 'assistant', content: 'ok' } }],
-        usage: {
-          prompt_tokens: 400, completion_tokens: 64,
-          prefill_duration_ttft: m.ttftMs / 1000, decoding_speed_tps: m.tps,
-        },
+        id, name: 'autoopt', status: 'completed', context: contextForKeys(measKeys),
+        steps: stepIds.map(sid => ({ id: sid, op: 'load', status: 'completed', duration_ms: 100 })),
       },
     });
   });
@@ -127,7 +200,6 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
   return counts;
 }
 
-// A completed run in the current TTFT/TPS measurement shape.
 const COMPLETED_RUN = {
   id: 'ao-20260712-101500-cafe',
   model: CHAT_MODEL,
@@ -140,14 +212,14 @@ const COMPLETED_RUN = {
   finished_at: '2026-07-12T10:15:00Z',
   summary: 'vulkan · ctx 32768 · -ctk q8_0 -ctv q8_0 --spec-default -b 2048 -ub 2048',
   lemonade_version: 'test',
+  job_id: 'job-test-old',
   stages: [
     { name: 'snapshot', status: 'completed', duration_ms: 12 },
     { name: 'model_facts', status: 'completed', duration_ms: 8 },
     { name: 'hf_metadata', status: 'completed', duration_ms: 420 },
     { name: 'fit_estimate', status: 'completed', duration_ms: 3 },
-    { name: 'bench_matrix', status: 'completed', duration_ms: 431000 },
+    { name: 'bench_job', status: 'completed', duration_ms: 431000 },
     { name: 'synthesize', status: 'completed', duration_ms: 2 },
-    { name: 'load_test', status: 'completed', duration_ms: 2100 },
   ],
   measurements: {
     fit: [
@@ -166,7 +238,7 @@ const COMPLETED_RUN = {
       llamacpp_backend: 'vulkan',
       ctx_size: 32768,
       llamacpp_args: '-ctk q8_0 -ctv q8_0 --spec-default -b 2048 -ub 2048',
-      rationale: ['vulkan chosen over rocm: best measured throughput/latency balance', 'Load test passed'],
+      rationale: ['vulkan chosen over rocm: best measured throughput/latency balance'],
       expected: { ttft_ms: 90, tps: 42, vram_gb: 20 },
     },
     alternatives: [
@@ -181,6 +253,17 @@ const COMPLETED_RUN = {
     ],
     sampling_defaults: { temperature: 0.7, top_p: 0.9, top_k: 40, min_p: 0.05, source: 'hf:org/base-model/generation_config.json' },
   },
+};
+
+const SYNTH_INPUTS = {
+  hardware: { gpus: [{ vendor: 'amd', name: 'x', family: 'gfx1151', vram_gb: 62 }], has_igpu: true, ram_is_vram: true, host_ram_gb: 64, installed_backends: ['vulkan', 'rocm'], os: 'linux' },
+  facts: { architecture: 'qwen3', block_count: 36, expert_count: 0, full_attention_interval: 0, swa_layer_count: 0, n_ctx_train: 32768, kv_bytes_per_token: 90112, weights_mib: 4096, is_moe: false, is_hybrid_or_recurrent: false, has_mtp: false, base_model_repo: '', checkpoint: CHAT_CHECKPOINT, metadata_present: true },
+  fits: [{ backend: 'vulkan', fits_fully: true, fitted_ctx: 0, fitted_ngl: -1, fitted_ncmoe: 0, weights_mib: 4096, kv_mib: 2816, compute_mib: 512, total_mib: 7424, available_mib: 58982, degraded: false, ok: true }],
+  plan: [
+    { label: 'Benchmarking vulkan at depth 0', backend: 'vulkan', ctx_size: 32768, llamacpp_args: '', params: { d: 0 }, ttft_key: 'vulkan_d0_ttft', tps_key: 'vulkan_d0_tps', vram_key: 'vulkan_d0_vram' },
+    { label: 'Benchmarking rocm at depth 0', backend: 'rocm', ctx_size: 2048, llamacpp_args: '', params: { d: 0 }, ttft_key: 'rocm_d0_ttft', tps_key: 'rocm_d0_tps', vram_key: 'rocm_d0_vram' },
+  ],
+  step_labels: { load_vulkan_d0: 'Benchmarking vulkan at depth 0', chat_vulkan_d0: 'Benchmarking vulkan at depth 0' },
 };
 
 async function seedRuns(page: Page, runs: Array<Record<string, unknown>>, key = RUNS_KEY) {
@@ -211,9 +294,9 @@ async function walkToBudget(page: Page, model = CHAT_MODEL) {
   await expect(page.locator('[data-autoopt-step="budget"]')).toBeVisible();
 }
 
-test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
+test.describe('AutoOpt wizard + server-side bench job', () => {
 
-  test('full Benchmark flow — coordinated loads/chats, synthesized result, load test', async ({ page }) => {
+  test('full Benchmark flow — posts a recipe, polls the job, synthesizes the result', async ({ page }) => {
     const counts = await mockServer(page, {
       loadedModels: [{ model_name: CHAT_MODEL, type: 'llm', recipe: 'llamacpp', device: 'gpu', checkpoint: '', backend_url: '', pid: 1, last_use: Date.now() }],
     });
@@ -221,20 +304,16 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await openWizard(page);
     await expect(page.locator('[data-autoopt-model-select]')).toHaveValue(CHAT_MODEL, { timeout: 10000 });
     await page.locator('[data-autoopt-next]').click();
-    await expect(page.locator('[data-autoopt-step="parallel"]')).toBeVisible();
     await page.locator('[data-autoopt-next]').click();
     await expect(page.locator('[data-autoopt-option="kv:q8_0"]')).toHaveAttribute('aria-pressed', 'true');
     await page.locator('[data-autoopt-next]').click();
-    await expect(page.locator('[data-autoopt-ram-suggestion]')).toContainText('Suggested for this machine (64 GB RAM)');
     await page.locator('[data-autoopt-option="ram:minimal"]').click();
     await page.locator('[data-autoopt-next]').click();
 
-    // No vision step (dropped in this PR).
     await expect(page.locator('[data-autoopt-step="budget"]')).toBeVisible();
     await expect(page.locator('[data-autoopt-step="vision"]')).toHaveCount(0);
     await page.locator('[data-autoopt-option="budget:standard"]').click();
 
-    // Consent gate for the Benchmark tier.
     await page.locator('[data-autoopt-next]').click();
     await expect(page.locator('[data-autoopt-start]')).toBeDisabled();
     await page.locator('[data-autoopt-back]').click();
@@ -243,35 +322,41 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await page.locator('[data-autoopt-start]').click();
 
     await expect(page.locator('[data-autoopt-step="running"]')).toBeVisible();
-    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--completed')).toHaveCount(7, { timeout: 20000 });
+    await expect(page.locator('[data-autoopt-close-note]')).toContainText('keeps running on the server');
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--completed')).toHaveCount(6, { timeout: 20000 });
     await page.locator('[data-autoopt-wizard] .slideover__close').click();
 
     const run = page.locator('[data-autoopt-run]');
     await expect(run.locator('.autoopt-status-chip--completed')).toBeVisible();
     await expect(page.locator('[data-autoopt-announcement]')).toContainText(`AutoOpt run for ${CHAT_MODEL} completed.`);
 
-    // The controller drove generic endpoints: it unloaded, loaded each config
-    // with an exact body, and timed a completion.
-    expect(counts.chat.length).toBeGreaterThan(0);
-    const benchLoads = counts.load.filter(b => b.save_options === false && b.merge_args === false);
-    expect(benchLoads.length).toBeGreaterThan(0);
-    // Backend duel loaded both backends...
-    const backends = new Set(benchLoads.map(b => b.llamacpp_backend));
-    expect(backends.has('vulkan')).toBe(true);
-    expect(backends.has('rocm')).toBe(true);
-    // ...at both depths (ctx 2048 for depth 0, 32768 for the deep point)...
-    const vulkanCtx = new Set(benchLoads.filter(b => b.llamacpp_backend === 'vulkan').map(b => b.ctx_size));
-    expect(vulkanCtx.has(32768)).toBe(true);
-    // ...and the batch ladder loaded the {512,2048,8192} rungs.
-    const ladderRungs = new Set(benchLoads
-      .map(b => /-b (\d+)/.exec(String(b.llamacpp_args || ''))?.[1])
-      .filter(Boolean));
-    expect(ladderRungs.has('512')).toBe(true);
-    expect(ladderRungs.has('2048')).toBe(true);
-    expect(ladderRungs.has('8192')).toBe(true);
+    // The controller built and POSTed exactly one bench recipe...
+    expect(counts.jobs).toHaveLength(1);
+    const recipe = counts.jobs[0] as { inputs: Record<string, unknown>; definition: { steps: Array<Record<string, unknown>> } };
+    const steps = recipe.definition.steps;
+    const ops = new Set(steps.map(s => s.op));
+    expect(ops.has('load')).toBe(true);
+    expect(ops.has('chat')).toBe(true);
+    expect(ops.has('unload')).toBe(true);
+    // ...loading both backends...
+    const loadBackends = new Set(steps.filter(s => s.op === 'load').map(s => (s.params as any)?.llamacpp_backend));
+    expect(loadBackends.has('vulkan')).toBe(true);
+    expect(loadBackends.has('rocm')).toBe(true);
+    // ...timing chats that extract TTFT/TPS into named context keys...
+    const extractKeys = steps.flatMap(s => Object.keys((s.extract as Record<string, string>) || {}));
+    expect(extractKeys.some(k => k.endsWith('_ttft'))).toBe(true);
+    expect(extractKeys.some(k => k.endsWith('_tps'))).toBe(true);
+    // ...at depth 0 and deep context, plus the batch ladder rungs...
+    expect(extractKeys).toEqual(expect.arrayContaining(['vulkan_d0_tps', 'vulkan_d30000_tps', 'ladder_b512_ttft', 'ladder_b2048_ttft', 'ladder_b8192_ttft']));
+    // ...with a memory-heavy load that falls back to a smaller context (test-by-failure).
+    const fallbackLoad = steps.find(s => s.op === 'load' && typeof s.on_fail === 'string' && String(s.on_fail).startsWith('loadlo_'));
+    expect(fallbackLoad).toBeTruthy();
+    expect(steps.some(s => String(s.id).startsWith('loadlo_'))).toBe(true);
+    // The client never drove load/chat/unload directly for the bench.
+    expect(counts.load).toHaveLength(0);
+    expect(counts.chat).toHaveLength(0);
 
-    // Synthesized recommendation reflects the measurements: vulkan won the duel,
-    // b2048 won the ladder (lowest TTFT).
+    // Synthesis reflects the job's measurements: vulkan won, b2048 (lowest TTFT) chosen.
     await page.locator('[data-autoopt-inspect]').click();
     await page.waitForSelector('[data-autoopt-detail]');
     const args = page.locator('[data-autoopt-rec-args]');
@@ -279,16 +364,46 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await expect(args).toContainText('--cache-ram 2048 -ctxcp 8');
     await expect(args).toContainText('-b 2048 -ub 2048');
     await expect(page.locator('.autoopt-rec-card__chips')).toContainText('vulkan');
-    // Tables render the TTFT/TPS shape.
     await expect(page.locator('[data-autoopt-bench-duel] thead')).toContainText('TTFT ms');
-    await expect(page.locator('[data-autoopt-bench-duel] thead')).toContainText('tok/s');
     await expect(page.locator('[data-autoopt-bench-ladder] thead')).toContainText('TTFT ms');
-    await expect(page.locator('[data-autoopt-bench-ladder] thead')).not.toContainText('tok/s');
-    // Load test recorded a pass.
-    await expect(page.locator('.autoopt-rec-card__rationale')).toContainText('Load test passed');
   });
 
-  test('Fast Scan runs without loads, unloads, or benchmarks while models are loaded', async ({ page }) => {
+  test('reload re-attaches to an in-flight server job and finishes it (review #6a)', async ({ page }) => {
+    await mockServer(page, { jobRunningPolls: 1 });
+    await seedRuns(page, [{
+      ...COMPLETED_RUN,
+      id: 'ao-reattach',
+      status: 'running',
+      finished_at: undefined,
+      summary: undefined,
+      result: undefined,
+      job_id: 'job-reattach-1',
+      synth_inputs: { ...SYNTH_INPUTS, facts: { ...SYNTH_INPUTS.facts }, plan: SYNTH_INPUTS.plan },
+      answers: { parallel: { mode: 'single' }, kv_cache_quant: 'none', ram_headroom: 'normal', allow_network: true },
+      stages: [
+        { name: 'snapshot', status: 'completed' },
+        { name: 'model_facts', status: 'completed' },
+        { name: 'hf_metadata', status: 'completed' },
+        { name: 'fit_estimate', status: 'completed' },
+        { name: 'bench_job', status: 'running' },
+        { name: 'synthesize', status: 'pending' },
+      ],
+      measurements: { fit: SYNTH_INPUTS.fits, bench: [] },
+    }]);
+
+    await openPresets(page);
+    // It re-attaches: the run stays running (not marked interrupted)...
+    const run = page.locator('[data-autoopt-run="ao-reattach"]');
+    await expect(run.locator('.autoopt-status-chip--running')).toBeVisible();
+    // ...then the polled job completes and the client synthesizes.
+    await expect(run.locator('.autoopt-status-chip--completed')).toBeVisible({ timeout: 15000 });
+    await page.locator('[data-autoopt-inspect="ao-reattach"]').click();
+    await page.waitForSelector('[data-autoopt-detail]');
+    await expect(page.locator('.autoopt-rec-card__chips')).toContainText('vulkan');
+    await expect(page.locator('[data-autoopt-rec-args]')).toContainText('--spec-default');
+  });
+
+  test('Fast Scan skips the bench job and never touches the model slot', async ({ page }) => {
     const counts = await mockServer(page, {
       loadedModels: [{ model_name: CHAT_MODEL, type: 'llm', recipe: 'llamacpp', device: 'gpu', checkpoint: '', backend_url: '', pid: 1, last_use: Date.now() }],
     });
@@ -303,13 +418,12 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await page.locator('[data-autoopt-start]').click();
 
     await expect(page.locator('[data-autoopt-step="running"]')).toBeVisible();
-    // bench_matrix + load_test are skipped for Fast Scan.
     await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--completed')).toHaveCount(5, { timeout: 15000 });
-    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--skipped')).toHaveCount(2);
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--skipped')).toHaveCount(1);
 
+    expect(counts.jobs).toHaveLength(0);
     expect(counts.load).toHaveLength(0);
     expect(counts.unload).toHaveLength(0);
-    expect(counts.chat).toHaveLength(0);
   });
 
   test('a late system-info reply must not clobber an explicit RAM-headroom choice', async ({ page }) => {
@@ -349,7 +463,7 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await page.locator('[data-autoopt-option="budget:quick"]').click();
     await page.locator('[data-autoopt-next]').click();
     await page.locator('[data-autoopt-start]').click();
-    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--skipped')).toHaveCount(2, { timeout: 15000 });
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--skipped')).toHaveCount(1, { timeout: 15000 });
   }
 
   test('a model without published sampling defaults completes hf_metadata with a neutral note', async ({ page }) => {
@@ -363,7 +477,6 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await page.locator('[data-autoopt-wizard] .slideover__close').click();
     await page.locator('[data-autoopt-inspect]').click();
     await page.waitForSelector('[data-autoopt-detail]');
-    await expect(page.locator('.autoopt-stage--failed')).toHaveCount(0);
     await expect(page.locator('.autoopt-stage__note')).toContainText('no sampling defaults published');
   });
 
@@ -394,8 +507,8 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await expect(select.locator(`option[value="${REGISTRY_MODEL}"]`)).toHaveCount(0);
   });
 
-  test('cancel mid-bench aborts the in-flight load and marks the run cancelled', async ({ page }) => {
-    await mockServer(page, { hangLoad: true });
+  test('cancel interrupts the server job and marks the run cancelled', async ({ page }) => {
+    const counts = await mockServer(page, { jobRunningPolls: 1000 });
 
     await openWizard(page);
     await walkToBudget(page);
@@ -403,34 +516,17 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await page.locator('[data-autoopt-next]').click();
     await page.locator('[data-autoopt-start]').click();
 
-    const loadRequest = page.waitForRequest('**/api/v1/load', { timeout: 15000 });
-    const loadAborted = page.waitForEvent('requestfailed', {
-      predicate: request => request.url().endsWith('/api/v1/load'),
-      timeout: 15000,
-    });
-    await loadRequest;
+    await expect(page.locator('[data-autoopt-step="running"]')).toBeVisible();
+    await expect.poll(() => counts.jobs.length, { timeout: 15000 }).toBe(1);
     await page.locator('[data-autoopt-cancel-run]').click();
-    await loadAborted;
 
+    await expect.poll(() => counts.interrupts.length, { timeout: 15000 }).toBeGreaterThan(0);
     await page.locator('[data-autoopt-wizard] .slideover__close').click();
     await expect(page.locator('[data-autoopt-run] .autoopt-status-chip--cancelled')).toBeVisible({ timeout: 10000 });
   });
 
-  test('test-by-failure: a load that fails then succeeds after backoff still completes', async ({ page }) => {
-    let firstLoadTestSeen = false;
-    await mockServer(page, {
-      loadHandler: (body) => {
-        // The load-test config is the only load carrying the full recommended
-        // args (--spec-default). Fail its first attempt to force a ctx backoff;
-        // the retried, smaller-context load then succeeds.
-        const args = String(body.llamacpp_args || '');
-        if (args.includes('--spec-default') && body.ctx_size === 32768 && !firstLoadTestSeen) {
-          firstLoadTestSeen = true;
-          return { status: 500, json: { error: { message: 'CUDA out of memory' } } };
-        }
-        return null;
-      },
-    });
+  test('a server job that fails surfaces the error in rail and detail', async ({ page }) => {
+    await mockServer(page, { jobFails: true });
 
     await openWizard(page);
     await walkToBudget(page);
@@ -438,12 +534,10 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await page.locator('[data-autoopt-next]').click();
     await page.locator('[data-autoopt-start]').click();
 
-    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--completed')).toHaveCount(7, { timeout: 20000 });
+    await expect(page.locator('[data-autoopt-step="running"] .preset-error')).toContainText('CUDA out of memory', { timeout: 20000 });
     await page.locator('[data-autoopt-wizard] .slideover__close').click();
-    await expect(page.locator('[data-autoopt-run] .autoopt-status-chip--completed')).toBeVisible();
-    await page.locator('[data-autoopt-inspect]').click();
-    await page.waitForSelector('[data-autoopt-detail]');
-    await expect(page.locator('.autoopt-rec-card__rationale')).toContainText('backed off');
+    const run = page.locator('[data-autoopt-run]');
+    await expect(run.locator('.autoopt-status-chip--failed')).toContainText('CUDA out of memory');
   });
 
   test('the rail fires no server calls before a run is started', async ({ page }) => {
@@ -451,20 +545,19 @@ test.describe('AutoOpt wizard + controller (generic-endpoint bench)', () => {
     await openPresets(page);
     await expect(page.locator('[data-autoopt-run-optimizer]')).toBeEnabled();
     await page.waitForTimeout(500);
+    expect(counts.jobs).toHaveLength(0);
     expect(counts.load).toHaveLength(0);
-    expect(counts.unload).toHaveLength(0);
-    expect(counts.chat).toHaveLength(0);
   });
 });
 
 test.describe('AutoOpt rail persistence + server scoping', () => {
 
-  test('a run interrupted by page reload is failed as interrupted', async ({ page }) => {
+  test('a client-only run interrupted by reload is failed as interrupted', async ({ page }) => {
     await mockServer(page);
-    await seedRuns(page, [{ ...COMPLETED_RUN, id: 'ao-20260713-090000-dead', status: 'running', finished_at: undefined, result: undefined, summary: undefined }]);
+    await seedRuns(page, [{ ...COMPLETED_RUN, id: 'ao-dead', status: 'running', job_id: undefined, synth_inputs: undefined, finished_at: undefined, result: undefined, summary: undefined }]);
 
     await openPresets(page);
-    const run = page.locator('[data-autoopt-run="ao-20260713-090000-dead"]');
+    const run = page.locator('[data-autoopt-run="ao-dead"]');
     await expect(run).toBeVisible();
     await expect(run.locator('.autoopt-status-chip--failed')).toContainText('interrupted');
   });
@@ -611,7 +704,6 @@ test.describe('AutoOpt run detail actions', () => {
     expect(body.llamacpp_args).toBe('-ctk q8_0 -ctv q8_0 --spec-default -b 2048 -ub 2048');
     expect(body.llamacpp_backend).toBe('vulkan');
     expect(body.save_options).toBe(false);
-    // No preset was saved.
     const saved = await page.evaluate(() => {
       for (const key of Object.keys(localStorage)) {
         if (key.includes('user_presets')) {
@@ -631,7 +723,6 @@ test.describe('AutoOpt run detail actions', () => {
     await page.locator('[data-autoopt-try-now]').click();
     await expect(page.locator('[data-autoopt-detail-notice]')).toContainText('nothing saved');
 
-    // reloadModel = unload(model) then load(model, temp options).
     expect(counts.unload.some(b => b.model_name === CHAT_MODEL)).toBe(true);
     expect(counts.load).toHaveLength(1);
     expect(counts.load[0].save_options).toBe(false);

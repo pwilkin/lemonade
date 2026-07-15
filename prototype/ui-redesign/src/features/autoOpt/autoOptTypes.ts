@@ -182,6 +182,36 @@ export interface AutoOptMeasurements {
   bench: BenchPoint[];
 }
 
+/**
+ * One expected measurement in the bench recipe. buildBenchRecipe emits the
+ * recipe steps and this parallel plan; after the job runs the client reads
+ * context[ttft_key]/context[tps_key]/context[vram_key] to rebuild BenchPoints.
+ */
+export interface BenchPlanEntry {
+  label: string;
+  backend: string;
+  ctx_size: number;
+  llamacpp_args: string;
+  params: BenchParams;
+  ttft_key: string;
+  tps_key: string;
+  vram_key: string;
+}
+
+/**
+ * Everything the client-side synthesize() needs, persisted with the run so a
+ * page reload can re-attach to the server job and synthesize once it finishes
+ * (the job itself only measures — it does not synthesize).
+ */
+export interface SynthInputs {
+  hardware: HardwareSnapshot;
+  facts: ModelFacts;
+  fits: FitEstimate[];
+  sampling?: SamplingDefaults;
+  plan: BenchPlanEntry[];
+  step_labels: Record<string, string>;
+}
+
 export interface AutoOptRunRecord {
   id: string;
   model: string;
@@ -199,6 +229,8 @@ export interface AutoOptRunRecord {
   stages: AutoOptStage[];
   measurements: AutoOptMeasurements;
   result?: AutoOptResult;
+  job_id?: string;
+  synth_inputs?: SynthInputs;
 }
 
 export function isAutoOptRunActive(run: Pick<AutoOptRunRecord, 'status'>): boolean {
