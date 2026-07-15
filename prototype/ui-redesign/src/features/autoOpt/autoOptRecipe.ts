@@ -1,4 +1,4 @@
-import { roundUpCtx } from './autoOptSynthesize';
+import { recommendedCtxSize, roundUpCtx } from './autoOptSynthesize';
 import {
   BenchParams,
   BenchPlanEntry,
@@ -17,7 +17,6 @@ export interface BenchRecipe {
 
 const DEPTH_SENTENCE = 'The quick brown fox jumps over the lazy dog. ';
 const DEPTH_TOKENS_PER_SENTENCE = 11;
-const MAX_BENCH_CTX = 32768;
 const FALLBACK_CTX = 2048;
 const MAX_COMPLETION_TOKENS = 64;
 
@@ -38,6 +37,7 @@ interface Measurement {
   backend: string;
   ctxPrimary: number;
   ctxFallback: number | null;
+  ctxProbe: boolean;
   args: string;
   params: BenchParams;
   depthTokens: number;
@@ -54,23 +54,24 @@ export function buildBenchRecipe(
 ): BenchRecipe {
   const kv = answers.kv_cache_quant;
   const baseArgs = kv !== 'none' ? `-ctk ${kv} -ctv ${kv}` : '';
-  const effectiveCtx = fit && fit.fitted_ctx > 0 ? fit.fitted_ctx : facts.n_ctx_train;
+  const recCtx = recommendedCtxSize(fit ? fit.fitted_ctx : 0, facts.n_ctx_train, kv);
 
   const depths: number[] = [0];
-  if (effectiveCtx >= 32768) depths.push(30000);
-  else if (effectiveCtx >= 8192) depths.push(Math.floor(0.8 * effectiveCtx));
+  if (recCtx >= 32768) depths.push(30000);
+  else if (recCtx >= 8192) depths.push(Math.floor(0.8 * recCtx));
 
   const measurements: Measurement[] = [];
 
   for (const backend of candidates) {
     for (const depth of depths) {
-      const primary = depth <= 0 ? Math.min(MAX_BENCH_CTX, roundUpCtx(effectiveCtx)) : ctxForDepth(depth);
+      const primary = depth <= 0 ? recCtx : ctxForDepth(depth);
       measurements.push({
         key: `${backend}_d${depth}`.replace(/[^a-zA-Z0-9_]/g, '_'),
         label: `Benchmarking ${backend} at depth ${depth}`,
         backend,
         ctxPrimary: primary,
         ctxFallback: depth <= 0 && primary > FALLBACK_CTX ? FALLBACK_CTX : null,
+        ctxProbe: depth <= 0,
         args: baseArgs,
         params: { d: depth },
         depthTokens: depth,
@@ -89,6 +90,7 @@ export function buildBenchRecipe(
         backend: winner,
         ctxPrimary: FALLBACK_CTX,
         ctxFallback: null,
+        ctxProbe: false,
         args: `${baseArgs} -b ${r} -ub ${r}`.trim(),
         params: { ladder: true, b: r, ub: r, d: 0 },
         depthTokens: 0,
@@ -105,6 +107,7 @@ export function buildBenchRecipe(
         backend: winner,
         ctxPrimary: FALLBACK_CTX,
         ctxFallback: null,
+        ctxProbe: false,
         args: `${baseArgs} --spec-type draft-mtp --spec-draft-n-max ${n} --spec-draft-p-min 0.75`.trim(),
         params: { spec_n: n, d: 0 },
         depthTokens: 0,
@@ -205,6 +208,7 @@ export function buildBenchRecipe(
       ctx_size: m.ctxPrimary,
       llamacpp_args: m.args,
       params: m.params,
+      ctx_probe: m.ctxProbe,
       ttft_key: ttftKey,
       tps_key: tpsKey,
       vram_key: vramKey,

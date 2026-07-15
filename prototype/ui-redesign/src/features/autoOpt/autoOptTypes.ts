@@ -176,6 +176,7 @@ export interface BenchPlanEntry {
   ctx_size: number;
   llamacpp_args: string;
   params: BenchParams;
+  ctx_probe?: boolean;
   ttft_key: string;
   tps_key: string;
   vram_key: string;

@@ -239,7 +239,7 @@ function benchPointsFromContext(plan: BenchPlanEntry[], context: Record<string, 
       vram_gb: Number.isFinite(m.vram) && m.vram > 0 ? m.vram : -1,
       ok,
       ...(ok ? {} : { error: 'not measured (config failed or skipped)' }),
-      ...(ok && !usedPrimary && fell && fell.ok ? { max_loaded_ctx: loadedCtx } : {}),
+      ...(ok && entry.ctx_probe ? { max_loaded_ctx: loadedCtx } : {}),
     };
   });
 }
@@ -262,7 +262,6 @@ async function pollBenchJob(
 ): Promise<JobRecord> {
   while (true) {
     if (signal.aborted) {
-      await api.interruptJob(jobId).catch(() => {});
       throw abortError();
     }
     let job: JobRecord;
@@ -270,7 +269,6 @@ async function pollBenchJob(
       job = await api.getJob(jobId, signal);
     } catch (err) {
       if (isAbort(err)) {
-        await api.interruptJob(jobId).catch(() => {});
         throw abortError();
       }
       throw err;

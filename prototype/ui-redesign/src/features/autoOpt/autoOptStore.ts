@@ -71,10 +71,10 @@ function coerceStoredRun(raw: unknown): AutoOptRunRecord | null {
   return coerced;
 }
 
-function readStoredRuns(): AutoOptRunRecord[] {
+function readStoredRuns(key: string): AutoOptRunRecord[] {
   if (typeof localStorage === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(storageKey());
+    const raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     const items = Array.isArray(parsed?.runs) ? parsed.runs : [];
@@ -87,9 +87,9 @@ function readStoredRuns(): AutoOptRunRecord[] {
   }
 }
 
-function writeStoredRuns(runs: AutoOptRunRecord[]): void {
+function writeStoredRuns(key: string, runs: AutoOptRunRecord[]): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem(storageKey(), JSON.stringify({ version: 2, runs: runs.slice(0, MAX_RUNS) }));
+  localStorage.setItem(key, JSON.stringify({ version: 2, runs: runs.slice(0, MAX_RUNS) }));
 }
 
 function errorMessage(err: unknown): string {
@@ -113,8 +113,10 @@ function runProgress(run: AutoOptRunRecord, detail: string | undefined): AutoOpt
 }
 
 class AutoOptStore {
+  private scopeKey = storageKey();
+  private scopeGeneration = 0;
   private state: AutoOptState = {
-    runs: readStoredRuns(),
+    runs: readStoredRuns(this.scopeKey),
     activeRunId: null,
     lastError: null,
     pendingCancel: new Set(),
@@ -122,8 +124,6 @@ class AutoOptStore {
   private listeners = new Set<Listener>();
   private controllers = new Map<string, AbortController>();
   private progressDetail = new Map<string, string>();
-  private storageScope = storageKey();
-  private scopeGeneration = 0;
 
   constructor() {
     this.reattachActiveRuns();
@@ -139,14 +139,14 @@ class AutoOptStore {
     } catch {
       return;
     }
-    if (key === this.storageScope) return;
-    this.storageScope = key;
+    if (key === this.scopeKey) return;
+    this.scopeKey = key;
     this.scopeGeneration++;
     for (const controller of this.controllers.values()) controller.abort();
     this.controllers.clear();
     this.progressDetail.clear();
     this.setState({
-      runs: readStoredRuns(),
+      runs: readStoredRuns(this.scopeKey),
       activeRunId: null,
       lastError: null,
       pendingCancel: new Set(),
@@ -346,7 +346,7 @@ class AutoOptStore {
   }
 
   private persist(): void {
-    writeStoredRuns(this.state.runs);
+    writeStoredRuns(this.scopeKey, this.state.runs);
   }
 
   private setState(patch: Partial<AutoOptState>): void {

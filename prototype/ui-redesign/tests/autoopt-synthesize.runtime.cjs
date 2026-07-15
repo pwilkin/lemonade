@@ -33,6 +33,35 @@ async function bundleSynthesize() {
   return { outputPath, modulePath: path.join(outputPath, 'autoOptSynthesize.cjs') };
 }
 
+async function bundleRecipe() {
+  const outputPath = fs.mkdtempSync(path.join(os.tmpdir(), 'lemonade-autoopt-recipe-'));
+  const config = {
+    mode: 'development',
+    target: 'node',
+    entry: path.resolve(__dirname, '../src/features/autoOpt/autoOptRecipe.ts'),
+    output: {
+      path: outputPath,
+      filename: 'autoOptRecipe.cjs',
+      library: { type: 'commonjs2' },
+    },
+    resolve: { extensions: ['.ts', '.tsx', '.js'] },
+    module: {
+      rules: [{ test: /\.tsx?$/, use: 'ts-loader', exclude: /node_modules/ }],
+    },
+    optimization: { minimize: false },
+  };
+
+  await new Promise((resolve, reject) => {
+    webpack(config, (error, stats) => {
+      if (error) return reject(error);
+      if (stats?.hasErrors()) return reject(new Error(stats.toString({ all: false, errors: true })));
+      resolve();
+    });
+  });
+
+  return { outputPath, modulePath: path.join(outputPath, 'autoOptRecipe.cjs') };
+}
+
 function igpuHw() {
   return {
     gpus: [{ vendor: 'amd', name: 'Radeon 8060S', family: 'gfx1151', vram_gb: 96.0 }],
@@ -439,6 +468,43 @@ function check(name, ok) {
       delete okPoint.max_loaded_ctx;
       const uncapped = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 0)], [okPoint], undefined);
       check('fallback-cap: full window kept without a ceiling', uncapped.primary.ctx_size === 131072);
+    }
+
+    // ── review #1: the bench validates the ctx it will recommend (kv quant) ──
+    {
+      const recipeBundle = await bundleRecipe();
+      try {
+        const { buildBenchRecipe } = require(recipeBundle.modulePath);
+        // Partial ctx fit: heuristic fitted_ctx is an f16 estimate; q8_0 doubles the
+        // recommended window, so the benched load must also target the doubled ctx.
+        const fit = fitting('vulkan', 8000, { fits_fully: true, fitted_ctx: 8000 });
+        const mf = { ...denseModel(), n_ctx_train: 131072 };
+        const ans = answers({ kv_cache_quant: 'q8_0' });
+
+        const rec = synthesize(igpuHw(), mf, ans, [fit], [], undefined);
+        const recipe = buildBenchRecipe(fit, ans, igpuHw(), mf, 'org/m', 'standard', ['vulkan']);
+        const load0 = recipe.steps.find(s => s.id === 'load_vulkan_d0');
+        const benchedCtx = load0 && load0.params && load0.params.ctx_size;
+
+        check('#1: benched depth-0 ctx == recommended ctx', benchedCtx === rec.primary.ctx_size);
+        check('#1: benched ctx is quant-scaled, not raw fitted_ctx', benchedCtx > 8000);
+        check('#1: recommended ctx is the quant-scaled window', rec.primary.ctx_size === 12288);
+        check('#1: depth-0 load carries -ctk quant', String(load0.params.llamacpp_args).includes('-ctk q8_0'));
+
+        const probe = recipe.plan.find(e => e.backend === 'vulkan' && e.params && e.params.d === 0);
+        check('#1: depth-0 plan entry is the ctx probe with a fallback',
+          probe && probe.ctx_probe === true && probe.fallback_ctx_size === 2048);
+
+        // If that quant-scaled load fails and only the fallback loads, cap the recommendation.
+        const fellBack = {
+          backend: 'vulkan', label: 'vulkan · d0', ctx_size: 2048, llamacpp_args: '-ctk q8_0 -ctv q8_0',
+          params: { d: 0 }, ttft_ms: 90, tps: 40, vram_gb: 20, ok: true, max_loaded_ctx: 2048,
+        };
+        const capped = synthesize(igpuHw(), mf, ans, [fit], [fellBack], undefined);
+        check('#1: failed quant-scaled load falls back to the loaded ctx', capped.primary.ctx_size === 2048);
+      } finally {
+        fs.rmSync(recipeBundle.outputPath, { recursive: true, force: true });
+      }
     }
 
     if (failures > 0) {

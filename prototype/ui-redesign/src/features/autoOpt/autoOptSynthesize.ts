@@ -32,6 +32,18 @@ export function kvQuantFactor(q: string): number {
   return 1.0;
 }
 
+export function recommendedCtxSize(fittedCtx: number, nCtxTrain: number, kv: string): number {
+  let ctx = nCtxTrain > 0 ? nCtxTrain : 32768;
+  if (fittedCtx > 0) {
+    let fitCtx = fittedCtx;
+    if (kv !== 'none') fitCtx = Math.floor(fitCtx / kvQuantFactor(kv));
+    ctx = Math.min(ctx, fitCtx);
+  }
+  let size = roundDownCtx(ctx);
+  if (nCtxTrain > 0 && size >= nCtxTrain) size = nCtxTrain;
+  return size;
+}
+
 const COMPUTE_BASE_MIB = 512;
 const MIN_OFFLOAD_CTX = 4096;
 const DEFAULT_KV_BYTES_PER_TOKEN = 131072;
@@ -263,23 +275,18 @@ export function synthesize(
         : 'about 3.5x context capacity; quality measurably degrades on very long contexts');
     p.rationale.push(`KV cache quantized to ${kv}: ${note}.`);
   }
-  let ctx = mf.n_ctx_train > 0 ? mf.n_ctx_train : 32768;
-  if (fit && fit.fitted_ctx > 0) {
-    let fitCtx = fit.fitted_ctx;
-    if (kv !== 'none') fitCtx = Math.floor(fitCtx / kvQuantFactor(kv));
-    ctx = Math.min(ctx, fitCtx);
-  }
+  let recCtx = recommendedCtxSize(fit ? fit.fitted_ctx : 0, mf.n_ctx_train, kv);
   let loadCeilingHit = false;
   for (const bp of bench) {
     if (!bp.ok || bp.backend !== backend) continue;
-    if (typeof bp.max_loaded_ctx === 'number' && bp.max_loaded_ctx > 0 && bp.max_loaded_ctx < ctx) {
-      ctx = bp.max_loaded_ctx;
+    if (typeof bp.max_loaded_ctx === 'number' && bp.max_loaded_ctx > 0 && bp.max_loaded_ctx < recCtx) {
+      recCtx = bp.max_loaded_ctx;
       loadCeilingHit = true;
     }
   }
-  p.ctx_size = roundDownCtx(ctx);
+  p.ctx_size = recCtx;
   if (loadCeilingHit) {
-    p.rationale.push(`Context ${p.ctx_size}: the heuristic estimate failed to load on this `
+    p.rationale.push(`Context ${p.ctx_size}: the heuristic estimate did not load on this `
       + 'hardware during benchmarking; capped to the largest context that actually loaded.');
   } else if (mf.n_ctx_train > 0 && p.ctx_size >= mf.n_ctx_train) {
     p.ctx_size = mf.n_ctx_train;

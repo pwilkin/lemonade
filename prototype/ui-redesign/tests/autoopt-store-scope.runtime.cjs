@@ -100,35 +100,52 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     const { autoOptStore } = require(modulePath);
     const ctrl = globalThis.__AO_CTRL__;
     const apiControl = globalThis.__AO_API_CONTROL__;
+    const idsOf = () => autoOptStore.snapshot().runs.map(r => r.id).sort();
+    const storedIds = (key) => JSON.parse(lsStore.get(key)).runs.map(r => r.id).sort();
 
     // Initial scope = A: A's runs are visible and the in-flight run is reattached.
-    let ids = autoOptStore.snapshot().runs.map(r => r.id).sort();
-    check('scope: server A runs loaded', JSON.stringify(ids) === JSON.stringify(['ao-a-done', 'ao-a-live']));
+    check('scope: server A runs loaded', JSON.stringify(idsOf()) === JSON.stringify(['ao-a-done', 'ao-a-live']));
     const aLive = ctrl.attached.find(a => a.id === 'ao-a-live');
     check('scope: A in-flight job reattached', !!aLive);
     check('scope: A poller not yet aborted', aLive && aLive.signal.aborted === false);
 
-    // Switch A -> B.
+    // Defect #2: baseUrl changes to B WITHOUT a status event (loadConnectionSettings path),
+    // so the scope generation is still gen-0. A stale A poller that writes now must land in
+    // A's CAPTURED key, never B's.
+    apiControl.setBaseSilent('http://server-b:2222');
+    ctrl.fire('ao-a-live');
+    await tick();
+    check('gen0-race: B key never overwritten by A', JSON.stringify(storedIds(KEY_B)) === JSON.stringify(['ao-b-done']));
+    check('gen0-race: A write landed in A key', JSON.stringify(storedIds(KEY_A)) === JSON.stringify(['ao-a-done', 'ao-a-live']));
+    // (bring live base back to A so the explicit switch below is a real A->B transition)
+    apiControl.setBaseSilent('http://server-a:1111');
+
+    // Switch A -> B (explicit, fires a status event).
     apiControl.setBase('http://server-b:2222');
     await tick();
 
-    ids = autoOptStore.snapshot().runs.map(r => r.id).sort();
-    check('switch: server B runs now shown', JSON.stringify(ids) === JSON.stringify(['ao-b-done']));
-    check('switch: A runs no longer in memory', !ids.includes('ao-a-live') && !ids.includes('ao-a-done'));
+    check('switch: server B runs now shown', JSON.stringify(idsOf()) === JSON.stringify(['ao-b-done']));
+    check('switch: A runs no longer in memory', !idsOf().includes('ao-a-live'));
     check('switch: A poller aborted', aLive && aLive.signal.aborted === true);
     check('switch: activeRunId reset', autoOptStore.snapshot().activeRunId === null);
 
-    // A's aborted controller must not cross-write into B's key, nor corrupt A's key.
-    const bStored = JSON.parse(lsStore.get(KEY_B)).runs.map(r => r.id).sort();
-    check('no-cross-write: B key holds only B runs', JSON.stringify(bStored) === JSON.stringify(['ao-b-done']));
-    const aStored = JSON.parse(lsStore.get(KEY_A)).runs.map(r => r.id).sort();
-    check('no-cross-write: A key intact', JSON.stringify(aStored) === JSON.stringify(['ao-a-done', 'ao-a-live']));
+    // Defect #3: switching servers must NOT interrupt the job (it keeps running on its own server);
+    // only the local poller is aborted.
+    check('switch: job NOT interrupted', apiControl.interruptCalls.length === 0);
 
-    // Switching back to A restores A's runs from its key.
+    // No cross-write on the explicit switch either.
+    check('no-cross-write: B key holds only B runs', JSON.stringify(storedIds(KEY_B)) === JSON.stringify(['ao-b-done']));
+    check('no-cross-write: A key intact', JSON.stringify(storedIds(KEY_A)) === JSON.stringify(['ao-a-done', 'ao-a-live']));
+
+    // Switching back to A restores A's runs and reattaches its in-flight job.
     apiControl.setBase('http://server-a:1111');
     await tick();
-    ids = autoOptStore.snapshot().runs.map(r => r.id).sort();
-    check('switch-back: A runs restored', JSON.stringify(ids) === JSON.stringify(['ao-a-done', 'ao-a-live']));
+    check('switch-back: A runs restored', JSON.stringify(idsOf()) === JSON.stringify(['ao-a-done', 'ao-a-live']));
+
+    // Defect #3: explicit user cancel DOES interrupt the job.
+    autoOptStore.cancelRun('ao-a-live');
+    await tick();
+    check('cancel: job interrupted', apiControl.interruptCalls.includes('job-a-live'));
 
     if (failures > 0) throw new Error(`${failures} store-scope checks failed`);
     console.log('\nAutoOpt store server-scope runtime tests passed.');
