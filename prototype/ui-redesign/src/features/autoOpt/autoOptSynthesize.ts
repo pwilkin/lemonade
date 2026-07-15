@@ -36,6 +36,29 @@ const COMPUTE_BASE_MIB = 512;
 const MIN_OFFLOAD_CTX = 4096;
 const DEFAULT_KV_BYTES_PER_TOKEN = 131072;
 
+const NON_GPU_BACKENDS = new Set(['cpu', 'system']);
+
+export const NO_GPU_BACKEND_ERROR =
+  'AutoOpt requires an installed GPU backend (Vulkan, ROCm, or CUDA); '
+  + 'this system reports only CPU inference.';
+
+export function selectCandidates(hw: HardwareSnapshot, ans: WizardAnswers): string[] {
+  const out: string[] = [];
+  for (const b of hw.installed_backends) {
+    if (NON_GPU_BACKENDS.has(b)) continue;
+    if (ans.backends_to_consider.length > 0 && !ans.backends_to_consider.includes(b)) continue;
+    out.push(b);
+  }
+  return out;
+}
+
+export function availableMib(hw: HardwareSnapshot): number {
+  if (hw.ram_is_vram) return Math.max(1024, hw.host_ram_gb * 0.9 * 1024);
+  const gpuGb = hw.gpus.reduce((sum, g) => sum + (g.vram_gb || 0), 0);
+  if (gpuGb > 0) return gpuGb * 0.92 * 1024;
+  return Math.max(1024, hw.host_ram_gb * 0.7 * 1024);
+}
+
 export interface FitInputs {
   backend: string;
   availableMib: number;
@@ -183,13 +206,8 @@ export function synthesize(
   const result: AutoOptResult = { primary: p, alternatives: [] };
   const args: string[] = [];
 
-  const candidates: string[] = [];
-  for (const b of hw.installed_backends) {
-    if (b === 'cpu' || b === 'system') continue;
-    if (ans.backends_to_consider.length > 0 && !ans.backends_to_consider.includes(b)) continue;
-    candidates.push(b);
-  }
-  if (candidates.length === 0) candidates.push('vulkan');
+  const candidates = selectCandidates(hw, ans);
+  if (candidates.length === 0) throw new Error(NO_GPU_BACKEND_ERROR);
 
   let backend = candidates[0];
   if (candidates.length > 1) {
@@ -251,8 +269,19 @@ export function synthesize(
     if (kv !== 'none') fitCtx = Math.floor(fitCtx / kvQuantFactor(kv));
     ctx = Math.min(ctx, fitCtx);
   }
+  let loadCeilingHit = false;
+  for (const bp of bench) {
+    if (!bp.ok || bp.backend !== backend) continue;
+    if (typeof bp.max_loaded_ctx === 'number' && bp.max_loaded_ctx > 0 && bp.max_loaded_ctx < ctx) {
+      ctx = bp.max_loaded_ctx;
+      loadCeilingHit = true;
+    }
+  }
   p.ctx_size = roundDownCtx(ctx);
-  if (mf.n_ctx_train > 0 && p.ctx_size >= mf.n_ctx_train) {
+  if (loadCeilingHit) {
+    p.rationale.push(`Context ${p.ctx_size}: the heuristic estimate failed to load on this `
+      + 'hardware during benchmarking; capped to the largest context that actually loaded.');
+  } else if (mf.n_ctx_train > 0 && p.ctx_size >= mf.n_ctx_train) {
     p.ctx_size = mf.n_ctx_train;
     p.rationale.push(`Context ${p.ctx_size}: the model's full trained window fits.`);
   } else {

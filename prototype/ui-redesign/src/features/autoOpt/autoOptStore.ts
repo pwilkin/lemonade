@@ -122,8 +122,35 @@ class AutoOptStore {
   private listeners = new Set<Listener>();
   private controllers = new Map<string, AbortController>();
   private progressDetail = new Map<string, string>();
+  private storageScope = storageKey();
+  private scopeGeneration = 0;
 
   constructor() {
+    this.reattachActiveRuns();
+    try {
+      api.onStatusChange(() => this.syncStorageScope());
+    } catch {}
+  }
+
+  private syncStorageScope(): void {
+    let key: string;
+    try {
+      key = storageKey();
+    } catch {
+      return;
+    }
+    if (key === this.storageScope) return;
+    this.storageScope = key;
+    this.scopeGeneration++;
+    for (const controller of this.controllers.values()) controller.abort();
+    this.controllers.clear();
+    this.progressDetail.clear();
+    this.setState({
+      runs: readStoredRuns(),
+      activeRunId: null,
+      lastError: null,
+      pendingCancel: new Set(),
+    });
     this.reattachActiveRuns();
   }
 
@@ -190,8 +217,11 @@ class AutoOptStore {
     controller: AbortController,
     run: (cb: Parameters<typeof executeAutoOptRun>[2]) => Promise<ControllerOutcome>,
   ): Promise<void> {
+    const gen = this.scopeGeneration;
+    const alive = () => gen === this.scopeGeneration;
     const callbacks = {
       stage: (name: string, status: AutoOptStage['status'], patch?: Partial<AutoOptStage>) => {
+        if (!alive()) return;
         this.updateRun(runId, r => {
           const stages = r.stages.some(stage => stage.name === name)
             ? r.stages.map(stage => stage.name === name
@@ -204,29 +234,33 @@ class AutoOptStore {
         });
       },
       progress: (detail: string) => {
+        if (!alive()) return;
         this.progressDetail.set(runId, detail);
         this.updateRun(runId, r => ({ ...r, progress: runProgress(r, detail) }), false);
       },
       fit: (estimate: AutoOptRunRecord['measurements']['fit'][number]) => {
+        if (!alive()) return;
         this.updateRun(runId, r => ({
           ...r,
           measurements: { ...r.measurements, fit: [...r.measurements.fit, estimate] },
         }));
       },
       bench: (points: AutoOptRunRecord['measurements']['bench']) => {
+        if (!alive()) return;
         this.updateRun(runId, r => ({
           ...r,
           measurements: { ...r.measurements, bench: points },
         }));
       },
       jobCreated: (jobId: string, synthInputs: SynthInputs) => {
+        if (!alive()) return;
         this.updateRun(runId, r => ({ ...r, job_id: jobId, synth_inputs: synthInputs }));
       },
     };
 
     try {
       const outcome = await run(callbacks);
-      this.updateRun(runId, run => {
+      if (alive()) this.updateRun(runId, run => {
         const next: AutoOptRunRecord = {
           ...run,
           status: controller.signal.aborted ? 'cancelled' : 'completed',
@@ -239,7 +273,7 @@ class AutoOptStore {
       });
     } catch (err) {
       const cancelled = controller.signal.aborted || (err as { name?: string } | null)?.name === 'AbortError';
-      this.updateRun(runId, run => {
+      if (alive()) this.updateRun(runId, run => {
         const next: AutoOptRunRecord = {
           ...run,
           status: cancelled ? 'cancelled' : 'failed',
@@ -252,8 +286,10 @@ class AutoOptStore {
     } finally {
       this.controllers.delete(runId);
       this.progressDetail.delete(runId);
-      const pendingCancel = new Set(this.state.pendingCancel);
-      if (pendingCancel.delete(runId)) this.setState({ pendingCancel });
+      if (alive()) {
+        const pendingCancel = new Set(this.state.pendingCancel);
+        if (pendingCancel.delete(runId)) this.setState({ pendingCancel });
+      }
     }
   }
 

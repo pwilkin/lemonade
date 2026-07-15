@@ -88,6 +88,7 @@ interface MockOptions {
   loadedModels?: Array<Record<string, unknown>>;
   jobRunningPolls?: number;
   jobFails?: boolean;
+  failPrimaryLoads?: boolean;
   loadHandler?: (body: Record<string, unknown>) => { status?: number; json?: unknown } | null;
 }
 
@@ -177,9 +178,19 @@ async function mockServer(page: Page, options: MockOptions = {}): Promise<MockCo
         },
       });
     }
+    const context = contextForKeys(measKeys);
+    if (options.failPrimaryLoads) {
+      for (const mk of measKeys) {
+        if (/_d\d+$/.test(mk) && !mk.endsWith('_lo')) {
+          delete context[`${mk}_ttft`];
+          delete context[`${mk}_tps`];
+          delete context[`${mk}_vram`];
+        }
+      }
+    }
     return route.fulfill({
       json: {
-        id, name: 'autoopt', status: 'completed', context: contextForKeys(measKeys),
+        id, name: 'autoopt', status: 'completed', context,
         steps: stepIds.map(sid => ({ id: sid, op: 'load', status: 'completed', duration_ms: 100 })),
       },
     });
@@ -517,6 +528,25 @@ test.describe('AutoOpt wizard + server-side bench job', () => {
     await expect.poll(() => counts.interrupts.length, { timeout: 15000 }).toBeGreaterThan(0);
     await page.locator('[data-autoopt-wizard] .slideover__close').click();
     await expect(page.locator('[data-autoopt-run] .autoopt-status-chip--cancelled')).toBeVisible({ timeout: 10000 });
+  });
+
+  test('when the primary ctx fails to load, the recommendation reflects the fallback ctx (review #2)', async ({ page }) => {
+    await mockServer(page, { failPrimaryLoads: true });
+
+    await openWizard(page);
+    await walkToBudget(page);
+    await page.locator('[data-autoopt-option="budget:standard"]').click();
+    await page.locator('[data-autoopt-next]').click();
+    await page.locator('[data-autoopt-start]').click();
+
+    await expect(page.locator('[data-autoopt-stage-list] .autoopt-stage--completed')).toHaveCount(6, { timeout: 20000 });
+    await page.locator('[data-autoopt-wizard] .slideover__close').click();
+    await page.locator('[data-autoopt-inspect]').click();
+    await page.waitForSelector('[data-autoopt-detail]');
+
+    await expect(page.locator('.autoopt-rec-card__chips')).toContainText('ctx 2,048');
+    await expect(page.locator('.autoopt-rec-card__chips')).not.toContainText('ctx 32,768');
+    await expect(page.locator('.autoopt-rec-card__rationale')).toContainText('largest context that actually loaded');
   });
 
   test('a server job that fails surfaces the error in rail and detail', async ({ page }) => {

@@ -144,7 +144,10 @@ function check(name, ok) {
 
   try {
     const engine = require(modulePath);
-    const { synthesize, checkpointRepoId, computeFitEstimate, benchScore, roundUpCtx } = engine;
+    const {
+      synthesize, checkpointRepoId, computeFitEstimate, benchScore, roundUpCtx,
+      selectCandidates, availableMib, NO_GPU_BACKEND_ERROR,
+    } = engine;
 
     // ── checkpoint_repo_id ────────────────────────────────────────────
     check('ckpt: plain repo', checkpointRepoId('Qwen/Qwen3-32B') === 'Qwen/Qwen3-32B');
@@ -362,6 +365,80 @@ function check(name, ok) {
 
       const rmax = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 0)], [], undefined);
       check('ctx: full-window fit uses trained window', rmax.primary.ctx_size === 131072);
+    }
+
+    // ── review #1: available-memory unit (GiB→MiB after the floor) ────
+    {
+      const unified = (gb) => availableMib({
+        gpus: [{ vendor: 'amd', name: '', family: '', vram_gb: gb }],
+        has_igpu: true, ram_is_vram: true, host_ram_gb: gb,
+        installed_backends: ['vulkan'], os: 'linux',
+      });
+      check('mem: 16 GB unified ≈ 0.9x in MiB', Math.abs(unified(16) - 16 * 0.9 * 1024) < 1);
+      check('mem: 64 GB unified ≈ 0.9x in MiB', Math.abs(unified(64) - 64 * 0.9 * 1024) < 1);
+      check('mem: 128 GB unified ≈ 0.9x in MiB', Math.abs(unified(128) - 128 * 0.9 * 1024) < 1);
+      // Regression: the old `max(1024, gb*0.9)*1024` treated a 64 GB box as ~1 TiB.
+      check('mem: 64 GB not treated as ~1 TiB', unified(64) < 128 * 1024);
+      check('mem: 16 GB stays under 20 GiB', unified(16) < 20 * 1024);
+
+      const cpuOnlyAvail = (gb) => availableMib({
+        gpus: [], has_igpu: false, ram_is_vram: false, host_ram_gb: gb,
+        installed_backends: ['cpu'], os: 'linux',
+      });
+      check('mem: cpu 64 GB ≈ 0.7x in MiB', Math.abs(cpuOnlyAvail(64) - 64 * 0.7 * 1024) < 1);
+      check('mem: cpu 64 GB stays under host RAM', cpuOnlyAvail(64) < 64 * 1024);
+
+      // A 16 GB unified box cannot fit an 18 GB model fully — it must offload with a finite ctx.
+      const fit16 = computeFitEstimate({
+        backend: 'vulkan', availableMib: unified(16), weightsMib: 18000,
+        kvBytesPerToken: 90112, blockCount: 36, isMoe: false, nCtxTrain: 131072, degraded: false,
+      });
+      check('fit: 16 GB box offloads an 18 GB model',
+        !fit16.fits_fully && fit16.fitted_ngl >= 0 && fit16.fitted_ngl < 36
+        && fit16.fitted_ctx > 0 && Number.isFinite(fit16.fitted_ctx));
+      // The same model on a 128 GB box fits fully.
+      const fit128 = computeFitEstimate({
+        backend: 'vulkan', availableMib: unified(128), weightsMib: 18000,
+        kvBytesPerToken: 90112, blockCount: 36, isMoe: false, nCtxTrain: 32768, degraded: false,
+      });
+      check('fit: 128 GB box fits the same model fully', fit128.fits_fully);
+    }
+
+    // ── review #3: one candidate list; CPU-only rejected ──────────────
+    {
+      check('cand: gpu backends selected',
+        selectCandidates(igpuHw(), answers()).join(',') === 'vulkan,rocm-stable');
+      check('cand: metal kept as a gpu backend',
+        selectCandidates({ ...igpuHw(), installed_backends: ['metal', 'vulkan'] }, answers()).join(',') === 'metal,vulkan');
+      const cpuOnly = {
+        gpus: [], has_igpu: false, ram_is_vram: false, host_ram_gb: 32,
+        installed_backends: ['system', 'cpu'], os: 'linux',
+      };
+      check('cand: cpu-only yields no candidates', selectCandidates(cpuOnly, answers()).length === 0);
+      let threw = '';
+      try {
+        synthesize(cpuOnly, denseModel(), answers(), [], [], undefined);
+      } catch (e) {
+        threw = String((e && e.message) || e);
+      }
+      check('cand: synthesize rejects cpu-only with the shared message', threw === NO_GPU_BACKEND_ERROR);
+    }
+
+    // ── review #2: recommendation capped to the ctx that actually loaded ─
+    {
+      const capPoint = {
+        backend: 'vulkan', label: 'vulkan · d0', ctx_size: 2048, llamacpp_args: '',
+        params: { d: 0 }, ttft_ms: 95, tps: 40, vram_gb: 20, ok: true, max_loaded_ctx: 2048,
+      };
+      const capped = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 0)], [capPoint], undefined);
+      check('fallback-cap: ctx capped to the loaded 2048', capped.primary.ctx_size === 2048);
+      check('fallback-cap: rationale explains the cap',
+        capped.primary.rationale.some(s => s.includes('largest context that actually loaded')));
+
+      const okPoint = { ...capPoint, ctx_size: 131072 };
+      delete okPoint.max_loaded_ctx;
+      const uncapped = synthesize(igpuHw(), denseModel(), answers(), [fitting('vulkan', 0)], [okPoint], undefined);
+      check('fallback-cap: full window kept without a ceiling', uncapped.primary.ctx_size === 131072);
     }
 
     if (failures > 0) {

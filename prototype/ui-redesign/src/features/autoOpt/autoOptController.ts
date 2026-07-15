@@ -1,8 +1,11 @@
 import api, { JobRecord } from '../../api';
 import { buildBenchRecipe } from './autoOptRecipe';
 import {
+  NO_GPU_BACKEND_ERROR,
+  availableMib,
   checkpointRepoId,
   computeFitEstimate,
+  selectCandidates,
   synthesize,
 } from './autoOptSynthesize';
 import {
@@ -117,13 +120,6 @@ function snapshotFromSystemInfo(info: Record<string, unknown>): HardwareSnapshot
   return hw;
 }
 
-function availableMib(hw: HardwareSnapshot): number {
-  if (hw.ram_is_vram) return Math.max(1024, hw.host_ram_gb * 0.9) * 1024;
-  const gpuGb = hw.gpus.reduce((sum, g) => sum + (g.vram_gb || 0), 0);
-  if (gpuGb > 0) return gpuGb * 0.92 * 1024;
-  return Math.max(1024, hw.host_ram_gb * 0.7) * 1024;
-}
-
 function factsFromModelDetail(detail: Record<string, unknown>): ModelFacts {
   const metadata = (detail.metadata && typeof detail.metadata === 'object' && !Array.isArray(detail.metadata))
     ? detail.metadata as Record<string, unknown>
@@ -214,22 +210,36 @@ async function fetchSamplingDefaults(base: string, signal: AbortSignal): Promise
 }
 
 function benchPointsFromContext(plan: BenchPlanEntry[], context: Record<string, unknown>): BenchPoint[] {
-  return plan.map(entry => {
-    const ttft = Number(context[entry.ttft_key]);
-    const tps = Number(context[entry.tps_key]);
-    const vram = Number(context[entry.vram_key]);
+  const readMetrics = (ttftKey?: string, tpsKey?: string, vramKey?: string) => {
+    const ttft = ttftKey ? Number(context[ttftKey]) : NaN;
+    const tps = tpsKey ? Number(context[tpsKey]) : NaN;
+    const vram = vramKey ? Number(context[vramKey]) : NaN;
     const ok = (Number.isFinite(ttft) && ttft > 0) || (Number.isFinite(tps) && tps > 0);
+    return { ttft, tps, vram, ok };
+  };
+  return plan.map(entry => {
+    const primary = readMetrics(entry.ttft_key, entry.tps_key, entry.vram_key);
+    const usedPrimary = primary.ok;
+    const fell = !usedPrimary && entry.fallback_ttft_key !== undefined
+      ? readMetrics(entry.fallback_ttft_key, entry.fallback_tps_key, entry.fallback_vram_key)
+      : null;
+    const m = usedPrimary ? primary : (fell && fell.ok ? fell : primary);
+    const ok = m.ok;
+    const loadedCtx = usedPrimary
+      ? entry.ctx_size
+      : (fell && fell.ok ? (entry.fallback_ctx_size ?? entry.ctx_size) : entry.ctx_size);
     return {
       backend: entry.backend,
       label: entry.label,
-      ctx_size: entry.ctx_size,
+      ctx_size: loadedCtx,
       llamacpp_args: entry.llamacpp_args,
       params: entry.params,
-      ttft_ms: ok && Number.isFinite(ttft) ? ttft : 0,
-      tps: ok && Number.isFinite(tps) ? tps : 0,
-      vram_gb: Number.isFinite(vram) && vram > 0 ? vram : -1,
+      ttft_ms: ok && Number.isFinite(m.ttft) ? m.ttft : 0,
+      tps: ok && Number.isFinite(m.tps) ? m.tps : 0,
+      vram_gb: Number.isFinite(m.vram) && m.vram > 0 ? m.vram : -1,
       ok,
       ...(ok ? {} : { error: 'not measured (config failed or skipped)' }),
+      ...(ok && !usedPrimary && fell && fell.ok ? { max_loaded_ctx: loadedCtx } : {}),
     };
   });
 }
@@ -389,15 +399,8 @@ export async function executeAutoOptRun(
   }
   throwIfAborted();
 
-  const candidates: string[] = [];
-  for (const b of hardware.installed_backends) {
-    if (b === 'cpu' || b === 'system' || b === 'metal') continue;
-    if (answers.backends_to_consider.length > 0 && !answers.backends_to_consider.includes(b)) continue;
-    candidates.push(b);
-  }
-  if (candidates.length === 0 && hardware.installed_backends.length > 0) {
-    candidates.push(hardware.installed_backends[0]);
-  }
+  const candidates = selectCandidates(hardware, answers);
+  if (candidates.length === 0) throw new Error(NO_GPU_BACKEND_ERROR);
 
   await runStage('fit_estimate', async () => {
     const avail = availableMib(hardware);

@@ -171,6 +171,10 @@ export function buildBenchRecipe(
       on_done: next,
     });
 
+    const loTtftKey = `${m.key}_lo_ttft`;
+    const loTpsKey = `${m.key}_lo_tps`;
+    const loVramKey = `${m.key}_lo_vram`;
+
     if (m.ctxFallback !== null) {
       stepLabels[`loadlo_${m.key}`] = `${m.label} (fallback ctx ${m.ctxFallback})`;
       steps.push({
@@ -183,13 +187,13 @@ export function buildBenchRecipe(
         id: `chatlo_${m.key}`,
         op: 'chat',
         params: chatParams(m.depthTokens),
-        extract: { [ttftKey]: 'timings.prompt_ms', [tpsKey]: 'timings.predicted_per_second' },
+        extract: { [loTtftKey]: 'timings.prompt_ms', [loTpsKey]: 'timings.predicted_per_second' },
         on_fail: next,
       });
       steps.push({
         id: `statslo_${m.key}`,
         op: 'system_stats',
-        extract: { [vramKey]: 'vram_gb' },
+        extract: { [loVramKey]: 'vram_gb' },
         on_fail: next,
         on_done: next,
       });
@@ -204,6 +208,12 @@ export function buildBenchRecipe(
       ttft_key: ttftKey,
       tps_key: tpsKey,
       vram_key: vramKey,
+      ...(m.ctxFallback !== null ? {
+        fallback_ctx_size: m.ctxFallback,
+        fallback_ttft_key: loTtftKey,
+        fallback_tps_key: loTpsKey,
+        fallback_vram_key: loVramKey,
+      } : {}),
     });
   });
 

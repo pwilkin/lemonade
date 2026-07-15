@@ -132,6 +132,7 @@ export interface BenchPoint {
   vram_gb: number;
   ok: boolean;
   error?: string;
+  max_loaded_ctx?: number;
 }
 
 export interface SamplingDefaults {
@@ -178,6 +179,10 @@ export interface BenchPlanEntry {
   ttft_key: string;
   tps_key: string;
   vram_key: string;
+  fallback_ctx_size?: number;
+  fallback_ttft_key?: string;
+  fallback_tps_key?: string;
+  fallback_vram_key?: string;
 }
 
 export interface SynthInputs {
