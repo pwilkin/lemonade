@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lemonade — Settings Cascade</title>
+<style>
+  :root {
+    --gold: #f0b64a;
+    --gold-dim: #b8863a;
+    --ink: #0a0a0c;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #08080a; color: #e8e2d8;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  #scene { position: fixed; inset: 0; display: block; }
+
+  #hint {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    color: rgba(240,182,74,.55); pointer-events: none;
+    transition: opacity .4s ease; text-align: center; line-height: 1.7;
+  }
+
+  #cta {
+    position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%) translateY(12px);
+    padding: 13px 30px; border-radius: 999px;
+    background: linear-gradient(180deg, rgba(240,182,74,.22), rgba(240,182,74,.08));
+    border: 1px solid rgba(240,182,74,.5);
+    color: #ffdf9e; font-size: 13px; letter-spacing: .16em; text-transform: uppercase;
+    cursor: pointer; opacity: 0; pointer-events: none;
+    transition: opacity .45s ease, transform .45s cubic-bezier(.2,.8,.2,1), box-shadow .3s;
+    backdrop-filter: blur(8px);
+  }
+  #cta.on { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+  #cta:hover { box-shadow: 0 0 34px rgba(240,182,74,.4); background: linear-gradient(180deg, rgba(240,182,74,.34), rgba(240,182,74,.12)); }
+
+  #chat {
+    position: fixed; display: flex; flex-direction: column;
+    opacity: 0; pointer-events: none; transition: opacity .5s ease;
+    padding: 26px 30px 22px; gap: 14px;
+  }
+  #chat.on { opacity: 1; pointer-events: auto; }
+  #chat-head {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 14px; border-bottom: 1px solid rgba(240,182,74,.18);
+    flex: 0 0 auto;
+  }
+  #chat-title { font-size: 15px; letter-spacing: .04em; color: #ffdf9e; }
+  #chat-meta { font-size: 11px; color: rgba(232,226,216,.45); margin-left: auto; letter-spacing: .06em; }
+  #back {
+    background: none; border: 1px solid rgba(240,182,74,.3); color: rgba(240,182,74,.8);
+    border-radius: 8px; padding: 5px 12px; font-size: 11px; cursor: pointer; letter-spacing: .1em;
+  }
+  #back:hover { background: rgba(240,182,74,.12); }
+  #log { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 6px; }
+  #log::-webkit-scrollbar { width: 6px; }
+  #log::-webkit-scrollbar-thumb { background: rgba(240,182,74,.22); border-radius: 3px; }
+  .msg { font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { color: #ffdf9e; align-self: flex-end; max-width: 78%;
+    background: rgba(240,182,74,.1); border: 1px solid rgba(240,182,74,.22);
+    padding: 9px 14px; border-radius: 14px 14px 4px 14px; }
+  .msg.bot { color: rgba(232,226,216,.92); max-width: 92%; }
+  .msg.sys { color: rgba(240,182,74,.5); font-size: 12px; letter-spacing: .06em; font-style: italic; }
+  #composer { display: flex; gap: 10px; flex: 0 0 auto; }
+  #input {
+    flex: 1; background: rgba(255,255,255,.04); border: 1px solid rgba(240,182,74,.25);
+    border-radius: 12px; padding: 12px 15px; color: #e8e2d8; font-size: 14px;
+    font-family: inherit; resize: none; outline: none; max-height: 110px;
+  }
+  #input:focus { border-color: rgba(240,182,74,.55); box-shadow: 0 0 20px rgba(240,182,74,.14); }
+  #send {
+    background: rgba(240,182,74,.18); border: 1px solid rgba(240,182,74,.45);
+    color: #ffdf9e; border-radius: 12px; padding: 0 20px; cursor: pointer; font-size: 13px;
+    letter-spacing: .1em;
+  }
+  #send:hover { background: rgba(240,182,74,.3); }
+  #send:disabled { opacity: .4; cursor: default; }
+
+  #err {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    background: rgba(120,20,20,.85); border: 1px solid rgba(255,120,120,.4);
+    color: #ffd7d7; padding: 9px 16px; border-radius: 10px; font-size: 12px;
+    opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 70vw;
+  }
+  #err.on { opacity: 1; }
+</style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div id="hint">Pick an intent, then a model</div>
+  <button id="cta">Open Chat</button>
+
+  <div id="chat">
+    <div id="chat-head">
+      <button id="back">&larr; Settings</button>
+      <span id="chat-title">Chat</span>
+      <span id="chat-meta"></span>
+    </div>
+    <div id="log"></div>
+    <div id="composer">
+      <textarea id="input" rows="1" placeholder="Ask something…"></textarea>
+      <button id="send">Send</button>
+    </div>
+  </div>
+
+  <div id="err"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.module.js",
+    "three/addons/": "./node_modules/three/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

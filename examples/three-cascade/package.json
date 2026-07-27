@@ -1,0 +1,13 @@
+{
+  "name": "lemonade-three-cascade",
+  "version": "0.0.1",
+  "scripts": {
+    "serve": "python3 -m http.server 8788"
+  },
+  "license": "Apache-2.0",
+  "description": "Three.js proof-of-concept: layered settings cascade for Lemonade Server",
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "private": true
+}
