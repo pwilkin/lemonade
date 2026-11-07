@@ -545,7 +545,6 @@ export const CheckpointSourceField: React.FC<CheckpointSourceFieldProps> = ({
   return (
     <div className={`custom-model-form__field checkpoint-source-field${wide ? ' custom-model-form__wide' : ''}`} role="group" aria-labelledby={labelId}>
       <span id={labelId} className="checkpoint-source-field__label">{label}</span>
-      {example}
       <div className="checkpoint-source-field__row">
         <select
           className="select checkpoint-source-field__mode"
@@ -560,6 +559,7 @@ export const CheckpointSourceField: React.FC<CheckpointSourceFieldProps> = ({
         </select>
         <div className="checkpoint-source-field__source">{sourceControl}</div>
       </div>
+      {example}
       {browsing && (
         <ServerFileBrowser
           initialPath={value ? parentDirectory(value) : ''}

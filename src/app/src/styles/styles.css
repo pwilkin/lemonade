@@ -5474,8 +5474,6 @@ optgroup {
 
 .checkpoint-source-field { display: grid; gap: var(--space-1); min-width: 0; }
 .checkpoint-source-field__label { color: var(--text-secondary); font-size: var(--text-sm); }
-.checkpoint-source-field > .custom-model-form__inline-example { display: flex; align-items: baseline; gap: var(--space-1); visibility: hidden; }
-.checkpoint-source-field:focus-within > .custom-model-form__inline-example { visibility: visible; }
 .checkpoint-source-field__row { display: grid; grid-template-columns: minmax(150px, max-content) minmax(0, 1fr); gap: var(--space-2); align-items: start; min-width: 0; }
 .checkpoint-source-field__source { min-width: 0; }
 .checkpoint-source-field__search { position: relative; min-width: 0; }
