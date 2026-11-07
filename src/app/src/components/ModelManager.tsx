@@ -3104,6 +3104,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onModelSelect, openModelReq
                     <>
                       <CheckpointSourceField
                         label={t('Text encoder checkpoint')}
+                        wide
                         value={customDraft.imageTextEncoder}
                         onChange={imageTextEncoder => handleCustomDraftChange({ imageTextEncoder })}
                         extensions={MODEL_FILE_EXTENSIONS}
@@ -3118,6 +3119,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onModelSelect, openModelReq
                       />
                       <CheckpointSourceField
                         label={t('VAE checkpoint')}
+                        wide
                         value={customDraft.imageVae}
                         onChange={imageVae => handleCustomDraftChange({ imageVae })}
                         extensions={MODEL_FILE_EXTENSIONS}
