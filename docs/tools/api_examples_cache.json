@@ -517,6 +517,126 @@
       }
     }
   },
+  "c1da91dd678502dc02499ac9886581c7461a8e791643bbaa911ca037cf94068b": {
+    "route": "internal.files",
+    "format": "Json",
+    "request": {
+      "method": "GET",
+      "path": "/internal/files",
+      "query": {
+        "path": "/usr",
+        "extensions": ".gguf,.safetensors"
+      },
+      "json": null,
+      "form": {},
+      "files": {}
+    },
+    "response": {
+      "status": 200,
+      "content_type": "application/json",
+      "body": {
+        "entries": [
+          {
+            "kind": "directory",
+            "name": "bin",
+            "path": "/usr/bin",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "games",
+            "path": "/usr/games",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "i686-w64-mingw32",
+            "path": "/usr/i686-w64-mingw32",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "include",
+            "path": "/usr/include",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "lib",
+            "path": "/usr/lib",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "lib32",
+            "path": "/usr/lib32",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "lib64",
+            "path": "/usr/lib64",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "libexec",
+            "path": "/usr/libexec",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "libx32",
+            "path": "/usr/libx32",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "local",
+            "path": "/usr/local",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "sbin",
+            "path": "/usr/sbin",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "share",
+            "path": "/usr/share",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "src",
+            "path": "/usr/src",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "x86_64-w64-mingw32",
+            "path": "/usr/x86_64-w64-mingw32",
+            "size_bytes": 0
+          },
+          {
+            "kind": "directory",
+            "name": "x86_64-w64-mingw32ucrt",
+            "path": "/usr/x86_64-w64-mingw32ucrt",
+            "size_bytes": 0
+          }
+        ],
+        "parent": "/",
+        "path": "/usr",
+        "roots": [
+          "/"
+        ],
+        "separator": "/",
+        "truncated": false
+      }
+    }
+  },
   "60e14fe3ad42fd15de522b596208dfbed0e406f950a675b68949683b3a9d08fc": {
     "route": "internal.model_sources",
     "format": "Json",

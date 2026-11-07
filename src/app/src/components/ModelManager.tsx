@@ -22,6 +22,7 @@ import { useWorkspaceMobileRail } from '../hooks/useWorkspaceMobileRail';
 import { useWorkspacePanelResize } from '../hooks/useWorkspacePanelResize';
 import { DEFAULT_OMNI_SYSTEM_PROMPT_TEMPLATE } from '../tools/omniTools';
 import { remoteResultAsModelInfo } from '../remoteModelCapabilities';
+import { CheckpointSourceField, type CheckpointSourceFieldProps } from './CheckpointSourceField';
 import {WorkspaceActionButton, WorkspaceActionGroup, WorkspaceDetailPanel, WorkspaceList, WorkspaceListRow, WorkspaceMetadataChip, WorkspacePanelResizer } from './WorkspacePanels';
 import Modal from './inspect/Modal';
 
@@ -262,6 +263,18 @@ const CUSTOM_RECIPE_SUGGESTIONS: Record<string, CustomRecipeSuggestion> = {
     note: 'TRELLIS.2 checkpoint for image-to-3D reconstruction.',
   },
 };
+
+const GGUF_EXTENSIONS = ['.gguf'];
+const IMAGE_COMPONENT_EXTENSIONS = ['.safetensors', '.gguf'];
+const MODEL_FILE_EXTENSIONS = ['.gguf', '.safetensors'];
+const WHISPER_EXTENSIONS = ['.bin'];
+
+function primaryCheckpointSourceOptions(recipe: string): Pick<CheckpointSourceFieldProps, 'extensions' | 'searchFilter' | 'quantizationValue'> {
+  if (recipe === 'llamacpp') return { extensions: GGUF_EXTENSIONS, searchFilter: 'gguf', quantizationValue: 'name' };
+  if (recipe === 'sd-cpp') return { extensions: IMAGE_COMPONENT_EXTENSIONS, quantizationValue: 'file' };
+  if (recipe === 'whispercpp') return { extensions: WHISPER_EXTENSIONS, quantizationValue: 'file' };
+  return { extensions: MODEL_FILE_EXTENSIONS, quantizationValue: 'file' };
+}
 
 const InlineCheckpointExample: React.FC<{ checkpoint: string; note?: string }> = ({ checkpoint, note }) => {
   const { t } = useI18n();
@@ -2705,7 +2718,6 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onModelSelect, openModelReq
   const selectedCustomRecipe = customRecipeOptions.find(option => option.value === customDraft.recipe) || customRecipeOptions[0];
   const selectedCustomRecipeName = selectedCustomRecipe?.recipe || optionRecipe(customDraft.recipe);
   const selectedCustomRecipeSuggestion = CUSTOM_RECIPE_SUGGESTIONS[selectedCustomRecipeName];
-  const primaryCheckpointPlaceholder = selectedCustomRecipeSuggestion?.checkpoint || t('org/model:Q4_K_M.gguf or /path/to/model.gguf');
   const mmprojCheckpointExample = selectedCustomRecipeSuggestion?.extraCheckpoints?.find(example => example.key === 'mmproj');
   const textEncoderCheckpointExample = selectedCustomRecipeSuggestion?.extraCheckpoints?.find(example => example.key === 'text_encoder');
   const vaeCheckpointExample = selectedCustomRecipeSuggestion?.extraCheckpoints?.find(example => example.key === 'vae');
@@ -3059,60 +3071,64 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onModelSelect, openModelReq
                         : customRecipeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                   </label>
-                  <label className="custom-model-form__field custom-model-form__wide">Checkpoint, Hugging Face repo, or local path
-                    {selectedCustomRecipeSuggestion && (
+                  <CheckpointSourceField
+                    wide
+                    label={t('Model checkpoint')}
+                    value={customDraft.checkpoint}
+                    onChange={checkpoint => handleCustomDraftChange({ checkpoint })}
+                    {...primaryCheckpointSourceOptions(selectedCustomRecipeName)}
+                    example={selectedCustomRecipeSuggestion && (
                       <InlineCheckpointExample
                         checkpoint={selectedCustomRecipeSuggestion.checkpoint}
                         note={selectedCustomRecipeSuggestion.note}
                       />
                     )}
-                    <input
-                      className="input"
-                      value={customDraft.checkpoint}
-                      onChange={e => handleCustomDraftChange({ checkpoint: e.target.value })}
-                      placeholder={primaryCheckpointPlaceholder}
-                    />
-                  </label>
+                  />
                   {showLlamacppMmprojField && (
-                    <label className="custom-model-form__field custom-model-form__wide">Vision projector (mmproj)
-                      <InlineCheckpointExample
-                        checkpoint={mmprojCheckpointExample?.checkpoint || 'repo/model:mmproj-model-f16.gguf'}
-                        note={mmprojCheckpointExample?.note}
-                      />
-                      <input
-                        className="input"
-                        value={customDraft.mmproj}
-                        onChange={e => handleCustomDraftChange({ mmproj: e.target.value })}
-                        placeholder={t('Optional')}
-                      />
-                    </label>
+                    <CheckpointSourceField
+                      wide
+                      label={t('Vision projector (mmproj)')}
+                      value={customDraft.mmproj}
+                      onChange={mmproj => handleCustomDraftChange({ mmproj })}
+                      extensions={GGUF_EXTENSIONS}
+                      searchFilter="gguf"
+                      showQuantizations={false}
+                      example={(
+                        <InlineCheckpointExample
+                          checkpoint={mmprojCheckpointExample?.checkpoint || 'repo/model:mmproj-model-f16.gguf'}
+                          note={mmprojCheckpointExample?.note}
+                        />
+                      )}
+                    />
                   )}
                   {showImageExtraCheckpointFields && (
                     <>
-                      <label className="custom-model-form__field">Text encoder checkpoint
-                        <InlineCheckpointExample
-                          checkpoint={textEncoderCheckpointExample?.checkpoint || 'repo/text-encoder:model.safetensors'}
-                          note={textEncoderCheckpointExample?.note}
-                        />
-                        <input
-                          className="input"
-                          value={customDraft.imageTextEncoder}
-                          onChange={e => handleCustomDraftChange({ imageTextEncoder: e.target.value })}
-                          placeholder={t('Optional')}
-                        />
-                      </label>
-                      <label className="custom-model-form__field">VAE checkpoint
-                        <InlineCheckpointExample
-                          checkpoint={vaeCheckpointExample?.checkpoint || 'repo/vae:model.safetensors'}
-                          note={vaeCheckpointExample?.note}
-                        />
-                        <input
-                          className="input"
-                          value={customDraft.imageVae}
-                          onChange={e => handleCustomDraftChange({ imageVae: e.target.value })}
-                          placeholder={t('Optional')}
-                        />
-                      </label>
+                      <CheckpointSourceField
+                        label={t('Text encoder checkpoint')}
+                        value={customDraft.imageTextEncoder}
+                        onChange={imageTextEncoder => handleCustomDraftChange({ imageTextEncoder })}
+                        extensions={IMAGE_COMPONENT_EXTENSIONS}
+                        quantizationValue="file"
+                        example={(
+                          <InlineCheckpointExample
+                            checkpoint={textEncoderCheckpointExample?.checkpoint || 'repo/text-encoder:model.safetensors'}
+                            note={textEncoderCheckpointExample?.note}
+                          />
+                        )}
+                      />
+                      <CheckpointSourceField
+                        label={t('VAE checkpoint')}
+                        value={customDraft.imageVae}
+                        onChange={imageVae => handleCustomDraftChange({ imageVae })}
+                        extensions={IMAGE_COMPONENT_EXTENSIONS}
+                        showQuantizations={false}
+                        example={(
+                          <InlineCheckpointExample
+                            checkpoint={vaeCheckpointExample?.checkpoint || 'repo/vae:model.safetensors'}
+                            note={vaeCheckpointExample?.note}
+                          />
+                        )}
+                      />
                     </>
                   )}
                 </>

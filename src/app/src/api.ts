@@ -474,6 +474,27 @@ export interface PullVariant {
 
 export type ModelRegistryProvider = 'huggingface' | 'modelscope';
 
+export interface ServerFileEntry {
+  name: string;
+  path: string;
+  kind: 'directory' | 'file';
+  size_bytes: number;
+}
+
+export interface ServerDirectoryListing {
+  path: string;
+  parent: string | null;
+  separator: string;
+  roots: string[];
+  entries: ServerFileEntry[];
+  truncated: boolean;
+}
+
+export interface HuggingFaceRepoFile {
+  path: string;
+  size_bytes?: number;
+}
+
 export interface PullVariantsResult {
   checkpoint: string;
   source?: ModelRegistryProvider;
@@ -2010,6 +2031,15 @@ class LemonadeAPI {
     return this._json<Record<string, unknown>>('/internal/config');
   }
 
+  /** Lists a directory on the server's filesystem; an empty path starts in extra_models_dir. */
+  async listServerFiles(path?: string, extensions?: string[], signal?: AbortSignal): Promise<ServerDirectoryListing> {
+    const params = new URLSearchParams();
+    if (path) params.set('path', path);
+    if (extensions && extensions.length > 0) params.set('extensions', extensions.join(','));
+    const query = params.toString();
+    return this._json<ServerDirectoryListing>(`/internal/files${query ? `?${query}` : ''}`, { signal });
+  }
+
   async setRuntimeConfig(changes: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this._json<Record<string, unknown>>('/internal/set', {
       method: 'POST',
@@ -2959,6 +2989,47 @@ export async function searchHuggingFace(
     ? filterHuggingFaceSearchResults(data)
       .map((item: HFModelResult) => ({ ...item, source: 'huggingface' as const }))
     : [];
+}
+
+/**
+ * Repository search for checkpoint pickers. Unlike searchHuggingFace() it keeps every
+ * pipeline (image, audio, ...) and only narrows by library tag when one is given.
+ */
+export async function searchHuggingFaceRepositories(
+  query: string,
+  options: { filter?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<HFModelResult[]> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('Browser is offline; HuggingFace search is unavailable.');
+  }
+  const params = new URLSearchParams({
+    search: query,
+    sort: 'downloads',
+    direction: '-1',
+    limit: String(options.limit ?? 20),
+  });
+  if (options.filter) params.set('filter', options.filter);
+  const resp = await fetch(`https://huggingface.co/api/models?${params}`, { signal });
+  if (!resp.ok) {
+    throw new Error(`HuggingFace search failed with HTTP ${resp.status}`);
+  }
+  const data = await resp.json();
+  return Array.isArray(data)
+    ? data.map((item: HFModelResult) => ({ ...item, source: 'huggingface' as const }))
+    : [];
+}
+
+export async function fetchHuggingFaceRepoFiles(repo: string, signal?: AbortSignal): Promise<HuggingFaceRepoFile[]> {
+  const encoded = repo.split('/').map(encodeURIComponent).join('/');
+  const resp = await fetch(`https://huggingface.co/api/models/${encoded}?blobs=true`, { signal });
+  if (!resp.ok) {
+    throw new Error(`HuggingFace repository lookup failed with HTTP ${resp.status}`);
+  }
+  const data = await resp.json() as { siblings?: Array<{ rfilename?: string; size?: number }> };
+  return (data.siblings || [])
+    .filter(sibling => typeof sibling.rfilename === 'string' && sibling.rfilename)
+    .map(sibling => ({ path: sibling.rfilename as string, size_bytes: typeof sibling.size === 'number' ? sibling.size : undefined }));
 }
 
 export async function searchModelScope(

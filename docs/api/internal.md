@@ -24,6 +24,7 @@ Apps that talk to a system-wide Lemonade Server install must not use these endpo
 | `DELETE` | [`/internal/aliases/{alias}`](#delete-internalaliasesalias) | Remove a model alias |
 | `GET` | [`/internal/routes`](#get-internalroutes) | List every route's specification |
 | `GET` | [`/internal/model-sources`](#get-internalmodel-sources) | List every model source's descriptor |
+| `GET` | [`/internal/files`](#get-internalfiles) | List a directory on the server's filesystem |
 <!-- END GENERATED: internal.summary -->
 
 <!-- BEGIN GENERATED: internal.shutdown -->
@@ -1078,3 +1079,73 @@ A catalog answers `host_specific: true` when its rows depend on this machine: a 
 - `local_origin_tokens` - Tokens naming where a model came from without a registry, such as `local_upload`.
 - `pull_source_values` - Every value [`/v1/pull`](./lemonade.md#post-v1pull) accepts for `source`: each registry token and each local origin.
 <!-- END GENERATED: internal.model_sources -->
+
+<!-- BEGIN GENERATED: internal.files -->
+## `GET /internal/files`
+<sub>![Status](https://img.shields.io/badge/status-fully_available-green)</sub>
+
+Lists the subdirectories and files of one directory on the machine `lemond` runs on, so a client can pick a local model file by a path the server can open, even when the client runs on another machine. The desktop app's custom model form uses it for its local path picker.
+
+Requires `LEMONADE_ADMIN_API_KEY` when it is set, otherwise `LEMONADE_API_KEY` when that is set.
+
+### Parameters
+
+| Parameter | Required | Description | Status |
+|-----------|----------|-------------|--------|
+| `path` (query) | No | Absolute directory to list. Defaults to `extra_models_dir` when it is set and exists, otherwise to the home directory of the user running lemond. | <sub>![Status](https://img.shields.io/badge/available-green)</sub> |
+| `extensions` (query) | No | Comma-separated file extensions to keep, e.g. `.gguf,.safetensors`, compared case-insensitively. Directories are always listed. When omitted, every file is listed. | <sub>![Status](https://img.shields.io/badge/available-green)</sub> |
+| `show_hidden` (query) | No | List entries whose name starts with `.`. Defaults to `false`. | <sub>![Status](https://img.shields.io/badge/available-green)</sub> |
+
+Entries are sorted directories first, then by name. Symbolic links are followed, so a link to a directory is listed as a directory and a link to a file reports the target's size. Entries `lemond` cannot stat are left out. At most 5000 entries are returned; `truncated` says whether more were left out.
+
+### Example
+
+=== "PowerShell"
+
+    ```powershell
+    Invoke-WebRequest -Uri "http://localhost:13305/internal/files?path=/usr&extensions=.gguf,.safetensors"
+    ```
+
+=== "Bash"
+
+    ```bash
+    curl "http://localhost:13305/internal/files?path=/usr&extensions=.gguf,.safetensors"
+    ```
+
+**Response:** `200 OK`
+
+```json
+{
+  "path": "/usr",
+  "parent": "/",
+  "separator": "/",
+  "roots": ["/"],
+  "entries": [
+    {"name": "bin", "path": "/usr/bin", "kind": "directory", "size_bytes": 0},
+    ... 14 more
+  ],
+  "truncated": false
+}
+```
+
+### Response format
+
+- `path` - The listed directory, absolute and normalized.
+- `parent` - The parent directory, or `null` at a filesystem root.
+- `separator` - The server's path separator: `/`, or `\` on Windows.
+- `roots` - Filesystem roots to start from: `/`, or the drive letters on Windows.
+- `entries` - The directory's entries.
+  - `name` - Entry name.
+  - `path` - Absolute path of the entry.
+  - `kind` - Whether the entry is a directory or a file.
+  - `size_bytes` - File size; `0` for a directory.
+- `truncated` - Whether entries past the 5000-entry limit were left out.
+
+### Errors
+
+| Status | When |
+|--------|------|
+| `403` | `path` exists but lemond is not allowed to list it |
+| `404` | `path` does not exist or is not a directory |
+| `500` | The request fails unexpectedly |
+<!-- END GENERATED: internal.files -->
