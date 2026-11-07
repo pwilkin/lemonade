@@ -265,13 +265,12 @@ const CUSTOM_RECIPE_SUGGESTIONS: Record<string, CustomRecipeSuggestion> = {
 };
 
 const GGUF_EXTENSIONS = ['.gguf'];
-const IMAGE_COMPONENT_EXTENSIONS = ['.safetensors', '.gguf'];
 const MODEL_FILE_EXTENSIONS = ['.gguf', '.safetensors'];
 const WHISPER_EXTENSIONS = ['.bin'];
 
-function primaryCheckpointSourceOptions(recipe: string): Pick<CheckpointSourceFieldProps, 'extensions' | 'searchFilter' | 'quantizationValue'> {
+function primaryCheckpointSourceOptions(recipe: string): Pick<CheckpointSourceFieldProps, 'extensions' | 'searchFilter' | 'variantsRecipe' | 'quantizationValue'> {
   if (recipe === 'llamacpp') return { extensions: GGUF_EXTENSIONS, searchFilter: 'gguf', quantizationValue: 'name' };
-  if (recipe === 'sd-cpp') return { extensions: IMAGE_COMPONENT_EXTENSIONS, quantizationValue: 'file' };
+  if (recipe === 'sd-cpp') return { extensions: MODEL_FILE_EXTENSIONS, variantsRecipe: 'sd-cpp', quantizationValue: 'file' };
   if (recipe === 'whispercpp') return { extensions: WHISPER_EXTENSIONS, quantizationValue: 'file' };
   return { extensions: MODEL_FILE_EXTENSIONS, quantizationValue: 'file' };
 }
@@ -3107,7 +3106,8 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onModelSelect, openModelReq
                         label={t('Text encoder checkpoint')}
                         value={customDraft.imageTextEncoder}
                         onChange={imageTextEncoder => handleCustomDraftChange({ imageTextEncoder })}
-                        extensions={IMAGE_COMPONENT_EXTENSIONS}
+                        extensions={MODEL_FILE_EXTENSIONS}
+                        variantsRecipe="sd-cpp"
                         quantizationValue="file"
                         example={(
                           <InlineCheckpointExample
@@ -3120,7 +3120,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onModelSelect, openModelReq
                         label={t('VAE checkpoint')}
                         value={customDraft.imageVae}
                         onChange={imageVae => handleCustomDraftChange({ imageVae })}
-                        extensions={IMAGE_COMPONENT_EXTENSIONS}
+                        extensions={MODEL_FILE_EXTENSIONS}
                         showQuantizations={false}
                         example={(
                           <InlineCheckpointExample

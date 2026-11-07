@@ -4,6 +4,7 @@ import api, {
   type HFModelResult,
   type HuggingFaceRepoFile,
   type PullVariant,
+  type PullVariantsRecipe,
   type ServerDirectoryListing,
   fetchHuggingFaceRepoFiles,
   friendlyErrorMessage,
@@ -206,6 +207,7 @@ interface RepoSelectorProps {
   value: string;
   extensions: string[];
   showQuantizations: boolean;
+  variantsRecipe?: PullVariantsRecipe;
   quantizationValue: 'name' | 'file';
   onChange: (selector: string) => void;
 }
@@ -215,7 +217,7 @@ interface SelectorOption {
   label: string;
 }
 
-const RepoSelector: React.FC<RepoSelectorProps> = ({ repo, value, extensions, showQuantizations, quantizationValue, onChange }) => {
+const RepoSelector: React.FC<RepoSelectorProps> = ({ repo, value, extensions, showQuantizations, variantsRecipe, quantizationValue, onChange }) => {
   const { t } = useI18n();
   const [variants, setVariants] = useState<PullVariant[]>([]);
   const [files, setFiles] = useState<HuggingFaceRepoFile[]>([]);
@@ -228,7 +230,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ repo, value, extensions, sh
     setFailed(false);
     const wantsVariants = showQuantizations && extensions.includes('.gguf');
     Promise.allSettled([
-      wantsVariants ? api.pullVariants(repo, 'huggingface', controller.signal) : Promise.resolve(null),
+      wantsVariants ? api.pullVariants(repo, 'huggingface', controller.signal, variantsRecipe) : Promise.resolve(null),
       fetchHuggingFaceRepoFiles(repo, controller.signal),
     ]).then(([variantResult, fileResult]) => {
       if (controller.signal.aborted) return;
@@ -238,7 +240,7 @@ const RepoSelector: React.FC<RepoSelectorProps> = ({ repo, value, extensions, sh
       setLoading(false);
     });
     return () => controller.abort();
-  }, [repo, showQuantizations, extensions]);
+  }, [repo, showQuantizations, variantsRecipe, extensions]);
 
   const { quantizations, otherFiles } = useMemo(() => {
     const covered = new Set<string>();
@@ -439,6 +441,7 @@ export interface CheckpointSourceFieldProps {
   extensions: string[];
   searchFilter?: string;
   showQuantizations?: boolean;
+  variantsRecipe?: PullVariantsRecipe;
   quantizationValue?: 'name' | 'file';
   example?: React.ReactNode;
   wide?: boolean;
@@ -451,6 +454,7 @@ export const CheckpointSourceField: React.FC<CheckpointSourceFieldProps> = ({
   extensions,
   searchFilter,
   showQuantizations = true,
+  variantsRecipe,
   quantizationValue = 'name',
   example,
   wide,
@@ -493,7 +497,7 @@ export const CheckpointSourceField: React.FC<CheckpointSourceFieldProps> = ({
             className="input"
             value={value}
             onChange={e => emit(e.target.value)}
-            placeholder={t('/path/to/model{extension}', { extension: extensions[0] || '' })}
+            placeholder={extensions.length > 0 ? t('/path/to/model ({extensions})', { extensions: extensions.join(', ') }) : t('/path/to/model')}
             spellCheck={false}
             aria-labelledby={labelId}
           />
@@ -529,6 +533,7 @@ export const CheckpointSourceField: React.FC<CheckpointSourceFieldProps> = ({
             value={selector}
             extensions={extensions}
             showQuantizations={showQuantizations}
+            variantsRecipe={variantsRecipe}
             quantizationValue={quantizationValue}
             onChange={nextSelector => emit(nextSelector ? `${repo}:${nextSelector}` : repo)}
           />

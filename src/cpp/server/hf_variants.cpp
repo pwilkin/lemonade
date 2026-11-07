@@ -345,8 +345,10 @@ GgufVariantSet enumerate_gguf_variants(
 nlohmann::json fetch_pull_variants(const models::ArtifactSourceResolver& resolver,
                                    const std::string& checkpoint,
                                    const std::string& registry_source,
-                                   bool& not_found) {
+                                   bool& not_found,
+                                   const std::string& gguf_recipe) {
     not_found = false;
+    const bool for_llamacpp = gguf_recipe == "llamacpp";
 
     if (checkpoint.empty() || checkpoint.find('/') == std::string::npos) {
         throw std::runtime_error("checkpoint must be a repository id of the form 'owner/name'");
@@ -510,7 +512,7 @@ nlohmann::json fetch_pull_variants(const models::ArtifactSourceResolver& resolve
 
     nlohmann::json compatibility_metadata = repository.raw_metadata;
     std::optional<nlohmann::json> expanded_metadata;
-    if (source == models::huggingface_descriptor().id) {
+    if (for_llamacpp && source == models::huggingface_descriptor().id) {
         expanded_metadata = fetch_huggingface_compatibility_metadata(
             checkpoint, repository.revision.id);
     }
@@ -522,8 +524,9 @@ nlohmann::json fetch_pull_variants(const models::ArtifactSourceResolver& resolve
             }
         }
     }
-    const std::string incompatibility = llamacpp_gguf_incompatibility(
-        compatibility_metadata, remote_registry_source_name(source));
+    const std::string incompatibility = for_llamacpp
+        ? llamacpp_gguf_incompatibility(compatibility_metadata, remote_registry_source_name(source))
+        : std::string();
     if (!incompatibility.empty()) {
         throw std::invalid_argument(
             "Repository " + checkpoint + " is not compatible with llama.cpp: " +
@@ -534,28 +537,28 @@ nlohmann::json fetch_pull_variants(const models::ArtifactSourceResolver& resolve
     // the pull, so they run through the same stamper that /pull applies at
     // registration; otherwise the preview and the registered model disagree.
     std::vector<std::string> labels;
-    if (!vset.mmproj_files.empty()) add_label_once(labels, "vision");
+    if (for_llamacpp && !vset.mmproj_files.empty()) add_label_once(labels, "vision");
     const auto draft_variant = std::find_if(
         vset.variants.begin(), vset.variants.end(),
         [](const GgufVariant& variant) { return !variant.draft_file.empty(); });
-    if (draft_variant != vset.variants.end()) {
+    if (for_llamacpp && draft_variant != vset.variants.end()) {
         switch (draft_kind(draft_variant->draft_file)) {
             case DraftKind::Mtp: add_label_once(labels, "mtp"); break;
             case DraftKind::Dflash: add_label_once(labels, "dflash"); break;
             case DraftKind::None: break;
         }
     }
-    {
+    if (for_llamacpp) {
         std::string id_lower = to_lower(checkpoint);
         if (id_lower.find("embed") != std::string::npos) add_label_once(labels, "embeddings");
         if (id_lower.find("rerank") != std::string::npos) add_label_once(labels, "reranking");
     }
-    backends::ensure_deployment_label(labels, "llamacpp");
+    backends::ensure_deployment_label(labels, gguf_recipe);
 
     nlohmann::json out;
     out["checkpoint"] = checkpoint;
     out["source"] = remote_registry_source_name(source);
-    out["recipe"] = "llamacpp";
+    out["recipe"] = gguf_recipe;
     out["repo_kind"] = "gguf";
     out["suggested_name"] = suggested_name;
     out["suggested_labels"] = labels;

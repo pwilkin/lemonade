@@ -33,6 +33,11 @@ const RouteArg kCheckpoint{"checkpoint", ArgIn::Query, {{"type", "string"}}, tru
 const RouteArg kSource{"source", ArgIn::Query, {{"type", "string"}}, false, Support::Available,
                        "Registry: `huggingface` or `modelscope`. Defaults to the server's "
                        "`default_model_source`."};
+const RouteArg kRecipe{"recipe", ArgIn::Query, {{"type", "string"}, {"enum", {"llamacpp", "sd-cpp"}}}, false,
+                       Support::Available,
+                       "Recipe that will load a GGUF repository's files. `llamacpp` (the default) "
+                       "rejects repositories llama.cpp cannot run; `sd-cpp` lists the quantizations of "
+                       "a stable-diffusion.cpp image model or component without that check."};
 
 class PullVariantsRoute : public ApiRoute {
 public:
@@ -50,7 +55,7 @@ public:
             "<owner/repo>` command and the desktop app's model search use it to fill in the "
             "install form. Lemonade reads public registry metadata, and sends the server's "
             "`HF_TOKEN` environment variable, when set, to Hugging Face for gated repositories.";
-        s.args = {kCheckpoint, kSource};
+        s.args = {kCheckpoint, kSource, kRecipe};
 
         RouteResponse response;
         response.format = ResponseFormat::Json;
@@ -60,7 +65,7 @@ public:
             "properties": {
                 "checkpoint": {"type": "string", "description": "Echoed input (normalized to `owner/repo` when given as a URL)."},
                 "source": {"type": "string", "description": "Registry the variants came from."},
-                "recipe": {"type": "string", "description": "Suggested recipe: `llamacpp` for a GGUF repo, `ryzenai-llm` for an ONNX RyzenAI repo, `collection.omni` for an exported collection."},
+                "recipe": {"type": "string", "description": "Suggested recipe: `llamacpp` for a GGUF repo (`sd-cpp` when `recipe=sd-cpp`), `ryzenai-llm` for an ONNX RyzenAI repo, `collection.omni` for an exported collection."},
                 "repo_kind": {"enum": ["gguf", "onnx-ryzenai", "collection"], "description": "Kind of repository: `gguf`, `onnx-ryzenai` or `collection`."},
                 "suggested_name": {"type": "string", "description": "Repo id stripped of the `owner/` prefix; suitable for use as the `user.<name>` model name."},
                 "suggested_labels": {"type": "array", "items": {"type": "string"},
@@ -134,6 +139,7 @@ public:
                     "Malformed 'checkpoint': expected a repository id of the form 'owner/name'");
                 return;
             }
+            const std::string recipe = req.value(kRecipe, "llamacpp");
             const auto parsed_source = parse_remote_registry_source(source);
             if (refuse_offline_download(ctx_, res)) {
                 return;
@@ -141,7 +147,7 @@ public:
             bool not_found = false;
             const std::string resolved_source = remote_registry_source_name(parsed_source);
             json body = lemon::fetch_pull_variants(ctx_.model_manager->resolver(),
-                                                       checkpoint, resolved_source, not_found);
+                                                       checkpoint, resolved_source, not_found, recipe);
             if (not_found) {
                 write_plain_error(res, kCheckpointNotFound, "Checkpoint '" + checkpoint + "' not found on " +
                     remote_registry_display_name(parsed_source));

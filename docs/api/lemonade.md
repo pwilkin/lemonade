@@ -956,6 +956,7 @@ Requires `LEMONADE_API_KEY` when it is set.
 |-----------|----------|-------------|--------|
 | `checkpoint` (query) | Yes | Repository id, e.g. `unsloth/Qwen3-8B-GGUF`. A Hugging Face or ModelScope URL is normalized to `owner/repo` and selects its registry. | <sub>![Status](https://img.shields.io/badge/available-green)</sub> |
 | `source` (query) | No | Registry: `huggingface` or `modelscope`. Defaults to the server's `default_model_source`. | <sub>![Status](https://img.shields.io/badge/available-green)</sub> |
+| `recipe` (query) | No | Recipe that will load a GGUF repository's files. `llamacpp` (the default) rejects repositories llama.cpp cannot run; `sd-cpp` lists the quantizations of a stable-diffusion.cpp image model or component without that check. | <sub>![Status](https://img.shields.io/badge/available-green)</sub> |
 
 ### Example
 
@@ -1000,7 +1001,7 @@ Requires `LEMONADE_API_KEY` when it is set.
 
 - `checkpoint` - Echoed input (normalized to `owner/repo` when given as a URL).
 - `source` - Registry the variants came from.
-- `recipe` - Suggested recipe: `llamacpp` for a GGUF repo, `ryzenai-llm` for an ONNX RyzenAI repo, `collection.omni` for an exported collection.
+- `recipe` - Suggested recipe: `llamacpp` for a GGUF repo (`sd-cpp` when `recipe=sd-cpp`), `ryzenai-llm` for an ONNX RyzenAI repo, `collection.omni` for an exported collection.
 - `repo_kind` - Kind of repository: `gguf`, `onnx-ryzenai` or `collection`.
 - `suggested_name` - Repo id stripped of the `owner/` prefix; suitable for use as the `user.<name>` model name.
 - `suggested_labels` - Inferred labels: `vision` if any GGUF file name contains `mmproj`, `mtp` or `dflash` if a variant ships a draft model, plus `embeddings` or `reranking` if the repo id contains `embed` or `rerank`, and the recipe's deployment label (e.g. `chat`) when no other label names one.

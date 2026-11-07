@@ -59,12 +59,15 @@ std::string llamacpp_gguf_incompatibility(
 //
 // Queries the selected registry, runs `enumerate_gguf_variants`,
 // derives suggested labels from the repo id, and returns the response JSON.
+// `gguf_recipe` is the recipe that will load the repo's GGUF files: `llamacpp`
+// (checked against llama.cpp's supported architectures) or `sd-cpp` (not).
 // Throws std::runtime_error on transport failure; sets `not_found` true if
 // the registry reports a missing/inaccessible repo so the caller can return HTTP 404.
 nlohmann::json fetch_pull_variants(const models::ArtifactSourceResolver& resolver,
                                    const std::string& checkpoint,
                                    const std::string& registry_source,
-                                   bool& not_found);
+                                   bool& not_found,
+                                   const std::string& gguf_recipe = "llamacpp");
 
 inline nlohmann::json fetch_pull_variants(const models::ArtifactSourceResolver& resolver,
                                           const std::string& checkpoint, bool& not_found) {

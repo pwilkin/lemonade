@@ -495,6 +495,8 @@ export interface HuggingFaceRepoFile {
   size_bytes?: number;
 }
 
+export type PullVariantsRecipe = 'llamacpp' | 'sd-cpp';
+
 export interface PullVariantsResult {
   checkpoint: string;
   source?: ModelRegistryProvider;
@@ -2408,8 +2410,10 @@ class LemonadeAPI {
     checkpoint: string,
     source: ModelRegistryProvider = 'huggingface',
     signal?: AbortSignal,
+    recipe?: PullVariantsRecipe,
   ): Promise<PullVariantsResult> {
     const params = new URLSearchParams({ checkpoint, source });
+    if (recipe) params.set('recipe', recipe);
     return this._json(`/api/v1/pull/variants?${params}`, { signal });
   }
 
